@@ -197,7 +197,7 @@ Successful runs are cached, so re-running an unchanged evaluation is instant; an
 
 Two advanced mechanisms have their own reference documentation:
 
-- Credential handling: for each run, Shuhari copies the agent's existing login and settings into a private temporary directory for the agent client, then deletes that directory; evaluated commands run in a separate minimal environment that cannot read it. Shuhari never keeps a persistent credential store or manages the login itself. See the [credential boundary](docs/architecture.md#credential-boundary).
+- Credential handling: for each run, Shuhari copies the agent's existing login and settings into a private temporary directory for the agent client, then deletes that directory; in the default `workspace-write` and `read-only` sandboxes, evaluated commands run in a separate minimal environment that cannot read it, while the `danger-full-access` override described below removes that protection. Shuhari never keeps a persistent credential store or manages the login itself. See the [credential boundary](docs/architecture.md#credential-boundary).
 - `required_actions`: an optional per-case contract that requires observed actions such as `web_search`, `github_search`, or `file_change` in every trial. See [action evidence](docs/architecture.md#action-evidence) for what counts as evidence and how ordering is matched.
 
 On hosts where the agent's own sandbox cannot start but the surrounding environment already provides isolation (for example, an isolated CI runner or container), the sandbox can be overridden explicitly:
