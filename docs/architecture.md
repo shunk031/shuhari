@@ -1,4 +1,4 @@
-# Architecture
+# Development Architecture Contract
 
 Shuhari separates the Agent Skills evaluation mechanism from repository-specific gate policy and agent-specific runtime behavior. Maintainers should use these boundaries to decide whether new behavior belongs in Shuhari, a consuming repository, or an agent adapter.
 
@@ -20,20 +20,9 @@ The consuming repository owns:
 - declared policy values such as `--trials`, `--jobs`, `--timeout`, `--network`, and `--strict-all-trials`;
 - static checks for repository-specific naming, migration, or ownership rules.
 
-The selected agent CLI owns authentication, model/provider configuration, sandbox enforcement, and its native event format. Shuhari passes explicit overrides when requested and converts native events into its internal result contract.
+The selected agent CLI owns authentication, model configuration, sandbox enforcement, and its native event format. Shuhari passes explicit overrides when requested and converts native events into its internal result contract.
 
-The former dotfiles evaluator responsibilities map to these boundaries as follows:
-
-| Responsibility | Owner |
-| --- | --- |
-| Agent Skills-compatible cases, fixtures, A/B runs, grading, aggregation, artifacts | Shuhari `eval` |
-| Instructions A/B runs using the same evaluation contract | Shuhari `eval instructions` |
-| Skill-read measurement, positive majority, strict negative controls | Shuhari `check trigger` |
-| Trial isolation, bounded concurrency, retry, cache, and failure evidence | Shuhari core |
-| Changed-file and staged-target discovery | Consuming repository |
-| Pre-commit globs, policy flag values, and `SKIP` behavior | Consuming repository |
-| Authentication, provider selection, and sandbox implementation | Agent CLI |
-| Document slop review, authoring calibration loops, viewers, and servers | Separate tools, outside Shuhari |
+Two integration boundaries remain open. The staged-target wrapper that maps pre-commit changes to Shuhari targets belongs to each consuming repository. Document slop review cannot import Go internals, and its runner and subprocess boundary is not yet specified. Authoring calibration loops, viewers, and servers remain separate tools outside Shuhari.
 
 ## Packages
 
@@ -84,6 +73,6 @@ For `workspace-write` and `read-only`, Shuhari selects a custom permission profi
 
 Native successful file-change events retain their trace order. Shuhari also compares the workspace before and after the run so successful shell writes such as `cp` and redirection satisfy `file_change`; this fallback observation is placed after trace-observed actions. Standard `gh api`, `gh search`, `gh repo`, and `gh browse` commands satisfy `github_search` without requiring a literal GitHub URL.
 
-## Integration boundary
+## Documentation growth
 
-The staged-target wrapper that maps pre-commit changes to Shuhari targets remains a consuming-repository follow-up. Document slop review cannot import Go internals; its runner and subprocess boundary is also an unspecified follow-up.
+Keep development documents flat under `docs/` while each subject fits in one page. Expected siblings include schema references, eval-authoring guidance, integration boundaries, and the release process. Create a subject subdirectory only when one of those topics grows into multiple documents; do not add empty category directories in advance.

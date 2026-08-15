@@ -1,34 +1,44 @@
 # Shuhari
 
-Shuhari (守破離) evaluates skills and persistent instructions against real coding agents. It follows the [Agent Skills evaluation workflow](https://agentskills.io/skill-creation/evaluating-skills): run each case in a clean context with and without the guidance, grade assertions with evidence, and retain outputs, timing, and aggregate statistics in an iteration workspace.
-
-The initial release provides three commands:
-
-```text
-shuhari eval skill <skill-path-or-file>...
-shuhari eval instructions <instructions-file>
-shuhari check trigger <skill-path>
-```
-
-`eval skill` and `eval instructions` measure output quality. `check trigger` is a separate gate-oriented check for whether a skill is read for relevant prompts and ignored for near-misses.
+[`Shuhari` (守破離)](https://en.wikipedia.org/wiki/Shuhari) evaluates skills and persistent instructions against real coding agents. It follows the [Agent Skills evaluation workflow](https://agentskills.io/skill-creation/evaluating-skills): run each case in a clean context with and without the guidance, grade assertions with evidence, and retain outputs, timing, and aggregate statistics in an iteration workspace.
 
 ## Install
 
-Install a release from GitHub with the [mise GitHub backend](https://mise.jdx.dev/dev-tools/backends/github.html):
+### GitHub Releases
 
-```sh
-mise use -g github:shunk031/shuhari
-```
+Tagged releases publish prebuilt archives for Linux, macOS, and Windows on the [GitHub Releases page](https://github.com/shunk031/shuhari/releases). Download the archive for your operating system and architecture, extract `shuhari`, and place it on your `PATH`.
 
-Or install from source:
+### Go
+
+Install from source with Go:
 
 ```sh
 go install github.com/shunk031/shuhari/cmd/shuhari@latest
 ```
 
-Shuhari currently requires an authenticated [Codex CLI](https://developers.openai.com/codex/noninteractive/) on `PATH`. It reuses the CLI's authentication and configuration; Shuhari does not manage credentials, providers, or gateway settings.
+Make sure the Go binary directory, normally `$(go env GOPATH)/bin`, is on your `PATH`.
 
-## Evaluate a skill
+### mise
+
+Install a GitHub release with the [mise GitHub backend](https://mise.jdx.dev/dev-tools/backends/github.html):
+
+```sh
+mise use -g github:shunk031/shuhari
+```
+
+The initial release runs evaluations through the [Codex CLI](https://developers.openai.com/codex/noninteractive/). Install `codex`, put it on your `PATH`, and sign in with `codex login` before running Shuhari. Shuhari calls that local CLI and uses its existing login and settings; it does not install Codex or accept or store your login credentials.
+
+## How to Use
+
+Shuhari groups output evaluation and trigger checks as sibling commands:
+
+- `shuhari eval` compares results with and without guidance.
+  - `shuhari eval skill <skill-path-or-file>...`
+  - `shuhari eval instructions <instructions-file>`
+- `shuhari check` measures gate-oriented behavior.
+  - `shuhari check trigger <skill-path>`
+
+### Prepare a skill evaluation
 
 Place `evals/evals.json` inside the skill directory:
 
@@ -50,7 +60,9 @@ Place `evals/evals.json` inside the skill directory:
 }
 ```
 
-`prompt`, `expected_output`, and `files` follow the Agent Skills guide. `assertions` can be added after inspecting the first run; when omitted, Shuhari grades the human-readable `expected_output`. File paths are relative to the skill root and cannot escape it.
+`prompt`, `expected_output`, and `files` follow the Agent Skills guide. Add `assertions` after inspecting the first run; when they are omitted, Shuhari grades the human-readable `expected_output`. File paths are relative to the skill root and cannot escape it.
+
+### Evaluate a skill
 
 Run the evaluation:
 
@@ -58,7 +70,9 @@ Run the evaluation:
 shuhari eval skill path/to/csv-analyzer
 ```
 
-Each case runs in fresh temporary Git repositories. The candidate has the skill installed; the baseline does not. An assertion grader evaluates both output artifacts. A separate blind comparator receives the original task and chooses the more useful result without knowing which variant it represents. Shuhari writes an iteration beside the skill by default:
+Each case runs in fresh temporary Git repositories. The candidate has the skill installed; the baseline does not. An assertion grader evaluates both output artifacts. A separate blind comparator receives the original task and chooses the more useful result without knowing which variant it represents.
+
+By default, Shuhari writes an iteration workspace beside the skill:
 
 ```text
 csv-analyzer-workspace/
@@ -76,9 +90,13 @@ csv-analyzer-workspace/
     └── manifest.json
 ```
 
-With multiple trials, trial 1 occupies the canonical path above and later trials are stored under `trials/<N>/`. `benchmark.json` contains pass-rate, time, and token statistics, with-minus-without deltas, and deterministic assertion audit categories. `manifest.json` records schema version, input and runner digests, agent identity, effective settings, and both judge-prompt digests. Checked-in JSON Schemas under [`schemas/`](schemas/) define the input and durable artifact contracts.
+With multiple trials, trial 1 occupies the canonical path above and later trials are stored under `trials/<N>/`.
 
-## Evaluate instructions
+- `benchmark.json` contains pass-rate, time, and token statistics, with-minus-without deltas, and deterministic assertion audit categories.
+- `manifest.json` lets you check whether the inputs, runner, agent settings, or judge prompts changed before comparing two iterations.
+- Checked-in JSON Schemas under [`schemas/`](schemas/) define the input and durable artifact contracts.
+
+### Prepare an instructions evaluation
 
 Instructions use the same run, grade, and aggregate flow. By default, `AGENTS.md` is paired with `AGENTS.evals.json` in the same directory:
 
@@ -96,13 +114,19 @@ Instructions use the same run, grade, and aggregate flow. By default, `AGENTS.md
 }
 ```
 
+Use `--evals <path>` when the eval file is elsewhere.
+
+### Evaluate instructions
+
+Run the evaluation:
+
 ```sh
 shuhari eval instructions path/to/AGENTS.md
 ```
 
-Use `--evals <path>` when the eval file is elsewhere. The workspace uses `with_instructions` and `without_instructions` variants.
+The workspace uses `with_instructions` and `without_instructions` variants.
 
-## Check skill triggers
+### Check skill triggers
 
 Trigger cases are deliberately separate from output-quality evals. Store them in `evals/triggers.json`:
 
@@ -130,9 +154,9 @@ Both positive cases and negative controls are required. Positive cases pass by p
 shuhari check trigger path/to/csv-analyzer --trials 3 --jobs 2 --timeout 600
 ```
 
-## Gate policy
+### Add a repository gate
 
-Shuhari implements the portable mechanism. Each consuming repository owns file selection and policy values such as trials, concurrency, timeout, network access, and pre-commit `SKIP` behavior. Keep those values explicit in the hook:
+Shuhari implements the portable evaluation mechanism. Each consuming repository owns file selection and policy values such as trials, concurrency, timeout, network access, and pre-commit `SKIP` behavior. Keep those values explicit in the hook:
 
 ```yaml
 - repo: local
@@ -154,6 +178,8 @@ Shuhari implements the portable mechanism. Each consuming repository owns file s
 
 Changed files passed to `eval skill` are resolved to the nearest `SKILL.md` and deduplicated. Use `--validate-only` for a fast schema and fixture check that does not start an agent.
 
+### Configure evaluation runs
+
 The default sandbox is `workspace-write`. Enable network access only for cases that need it:
 
 ```sh
@@ -166,7 +192,7 @@ On hosts where the Codex sandbox cannot start but the surrounding environment al
 SHUHARI_SANDBOX=danger-full-access shuhari eval skill path/to/skill
 ```
 
-This override removes Codex's command filesystem and network boundary. Shuhari still removes credential paths from the generated command environment, but same-UID commands can search the host filesystem. Use the override only inside an external container or equivalent credential-free boundary. See [Credential boundary](ARCHITECTURE.md#credential-boundary).
+This override removes Codex's command filesystem and network boundary. Shuhari still removes credential paths from the generated command environment, but same-UID commands can search the host filesystem. Use the override only inside an external container or equivalent credential-free boundary. See the [credential boundary](docs/architecture.md#credential-boundary).
 
 `required_actions` is an optional Shuhari extension for cases that must observe `web_search`, `github_search`, or `file_change` in order. It checks successful trace evidence and workspace effects, requires the ordered actions in every trial, and never enables network access implicitly.
 
@@ -174,8 +200,4 @@ Successful runs are cached by the target contents and filenames, effective polic
 
 Exit status is `0` for a pass, `1` for an evaluation or trigger-policy failure, and `2` for invalid input or an execution error.
 
-## Agent adapters
-
-Codex is the only adapter in the initial release. The execution boundary is intentionally small: an adapter reports capabilities and identity, runs one isolated request, and returns a response, transcript, usage, target-read evidence, and observed actions. Claude Code or Antigravity support can implement that boundary later without changing eval schemas or workspace artifacts.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for package responsibilities.
+Codex is the only adapter in the initial release. Other coding-agent CLIs can implement the same narrow execution boundary without changing eval schemas or workspace artifacts. See the [development architecture contract](docs/architecture.md) for package responsibilities and extension boundaries.
