@@ -1,6 +1,9 @@
 package eval
 
-import "math"
+import (
+	"math"
+	"sort"
+)
 
 type Statistic struct {
 	Mean   float64 `json:"mean"`
@@ -28,7 +31,17 @@ type BenchmarkSummary struct {
 }
 
 type Benchmark struct {
-	RunSummary BenchmarkSummary `json:"run_summary"`
+	SchemaVersion     string              `json:"schema_version"`
+	RunSummary        BenchmarkSummary    `json:"run_summary"`
+	AssertionAnalysis []AssertionAnalysis `json:"assertion_analysis"`
+}
+
+type AssertionAnalysis struct {
+	CaseID          string  `json:"case_id"`
+	Assertion       string  `json:"assertion"`
+	WithPassRate    float64 `json:"with_pass_rate"`
+	WithoutPassRate float64 `json:"without_pass_rate"`
+	Category        string  `json:"category"`
 }
 
 func caseAssertionsPass(trials []bool, strict bool) bool {
@@ -75,7 +88,63 @@ func buildBenchmark(runs []gradedRun) Benchmark {
 	} else {
 		summary.WithInstructions, summary.WithoutInstructions = &with, &without
 	}
-	return Benchmark{RunSummary: summary}
+	return Benchmark{SchemaVersion: workspaceSchemaVersion, RunSummary: summary, AssertionAnalysis: analyzeAssertions(runs, withName, withoutName)}
+}
+
+type assertionCounts struct {
+	passed int
+	total  int
+}
+
+func analyzeAssertions(runs []gradedRun, withVariant, withoutVariant string) []AssertionAnalysis {
+	byKey := map[string]map[string]*assertionCounts{}
+	labels := map[string]struct{ caseID, assertion string }{}
+	for _, run := range runs {
+		for _, result := range run.AssertionResult {
+			key := run.CaseID + "\x00" + result.Text
+			labels[key] = struct{ caseID, assertion string }{run.CaseID, result.Text}
+			if byKey[key] == nil {
+				byKey[key] = map[string]*assertionCounts{}
+			}
+			if byKey[key][run.Variant] == nil {
+				byKey[key][run.Variant] = &assertionCounts{}
+			}
+			value := byKey[key][run.Variant]
+			value.total++
+			if result.Passed {
+				value.passed++
+			}
+		}
+	}
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	analysis := make([]AssertionAnalysis, 0, len(keys))
+	for _, key := range keys {
+		withRate := countRate(byKey[key][withVariant])
+		withoutRate := countRate(byKey[key][withoutVariant])
+		category := "mixed"
+		switch {
+		case withRate == 1 && withoutRate == 1:
+			category = "always_pass_both"
+		case withRate == 0 && withoutRate == 0:
+			category = "always_fail_both"
+		case withRate == 1 && withoutRate == 0:
+			category = "pass_with_fail_without"
+		}
+		label := labels[key]
+		analysis = append(analysis, AssertionAnalysis{CaseID: label.caseID, Assertion: label.assertion, WithPassRate: withRate, WithoutPassRate: withoutRate, Category: category})
+	}
+	return analysis
+}
+
+func countRate(value *assertionCounts) float64 {
+	if value == nil || value.total == 0 {
+		return 0
+	}
+	return float64(value.passed) / float64(value.total)
 }
 
 func configurationStatistics(runs []gradedRun) BenchmarkConfiguration {

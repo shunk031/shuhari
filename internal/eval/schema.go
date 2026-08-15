@@ -144,6 +144,7 @@ func validateCases(root string, raw []rawCase) ([]Case, error) {
 		return nil, errors.New("evals must contain at least one case")
 	}
 	seen := map[string]bool{}
+	seenPaths := map[string]string{}
 	cases := make([]Case, 0, len(raw))
 	for index, item := range raw {
 		identifier := string(item.ID)
@@ -154,6 +155,11 @@ func validateCases(root string, raw []rawCase) ([]Case, error) {
 			return nil, fmt.Errorf("duplicate eval id %q", identifier)
 		}
 		seen[identifier] = true
+		pathName := safeName(identifier)
+		if previous, exists := seenPaths[pathName]; exists {
+			return nil, fmt.Errorf("eval ids %q and %q map to the same workspace path %q", previous, identifier, pathName)
+		}
+		seenPaths[pathName] = identifier
 		if strings.TrimSpace(item.Prompt) == "" || strings.TrimSpace(item.ExpectedOutput) == "" {
 			return nil, fmt.Errorf("evals[%d] requires prompt and expected_output", index)
 		}

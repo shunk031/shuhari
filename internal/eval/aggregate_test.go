@@ -57,3 +57,29 @@ func TestInstructionsBenchmarkOmitsSkillConfigurations(t *testing.T) {
 		t.Fatalf("instructions benchmark contains without_skill: %s", encoded)
 	}
 }
+
+func TestAssertionAnalysisClassifiesDeterministicOutcomes(t *testing.T) {
+	t.Parallel()
+
+	runs := []gradedRun{
+		{CaseID: "case", Trial: 1, Variant: variantWithSkill, AssertionResult: []AssertionResult{{Text: "value", Passed: true}}},
+		{CaseID: "case", Trial: 2, Variant: variantWithSkill, AssertionResult: []AssertionResult{{Text: "value", Passed: true}}},
+		{CaseID: "case", Trial: 1, Variant: variantWithoutSkill, AssertionResult: []AssertionResult{{Text: "value", Passed: false}}},
+		{CaseID: "case", Trial: 2, Variant: variantWithoutSkill, AssertionResult: []AssertionResult{{Text: "value", Passed: false}}},
+	}
+	benchmark := buildBenchmark(runs)
+	if len(benchmark.AssertionAnalysis) != 1 || benchmark.AssertionAnalysis[0].Category != "pass_with_fail_without" {
+		t.Fatalf("analysis = %#v", benchmark.AssertionAnalysis)
+	}
+}
+
+func TestRequiredActionsAlwaysRequireEveryTrial(t *testing.T) {
+	t.Parallel()
+
+	if allTrialsPass([]bool{true, false, true}) {
+		t.Fatal("required actions accepted a 2/3 majority")
+	}
+	if !allTrialsPass([]bool{true, true, true}) {
+		t.Fatal("required actions rejected all passing trials")
+	}
+}

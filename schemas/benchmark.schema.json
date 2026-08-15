@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shunk031/shuhari/schemas/benchmark.schema.json",
+  "title": "Shuhari benchmark artifact",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "run_summary": { "type": "object" },
+    "assertion_analysis": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "case_id": { "type": "string" },
+          "assertion": { "type": "string" },
+          "with_pass_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+          "without_pass_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+          "category": { "enum": ["always_pass_both", "always_fail_both", "pass_with_fail_without", "mixed"] }
+        },
+        "required": ["case_id", "assertion", "with_pass_rate", "without_pass_rate", "category"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema_version", "run_summary", "assertion_analysis"],
+  "additionalProperties": false
+}

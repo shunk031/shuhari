@@ -31,6 +31,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if config.Trials < 1 || config.Jobs < 1 || config.Timeout <= 0 {
 		return Report{}, errors.New("trials, jobs, and timeout must be positive")
 	}
+	config.Sandbox = harness.EffectiveSandbox(config.Sandbox)
 	capabilities := agent.Capabilities()
 	if suite.Kind == harness.TargetSkill && !capabilities.Skills {
 		return Report{}, errors.New("selected agent does not support skill evaluation")
@@ -51,12 +52,13 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 		return Report{}, err
 	}
 	cacheOptions, _ := json.Marshal(struct {
-		Digest       string
-		RunnerDigest string
-		Identity     harness.Identity
-		Config       Config
-		Grader       string
-	}{Digest: digest, RunnerDigest: runnerDigest, Identity: identity, Config: config, Grader: graderPrompt})
+		Digest           string
+		RunnerDigest     string
+		Identity         harness.Identity
+		Config           Config
+		GraderDigest     string
+		ComparatorDigest string
+	}{Digest: digest, RunnerDigest: runnerDigest, Identity: identity, Config: config, GraderDigest: promptDigest(graderPrompt), ComparatorDigest: promptDigest(comparatorPrompt)})
 	key := cache.Key(cacheOptions)
 	if !config.NoCache {
 		if record, ok, err := store.GetSuccess(key); err != nil {
@@ -69,6 +71,9 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if err != nil {
 		return Report{}, err
 	}
+	if err := writeManifest(iteration, suite, digest, runnerDigest, identity, config); err != nil {
+		return Report{Workspace: iteration}, err
+	}
 	withVariant, withoutVariant := variantsFor(suite.Kind)
 	tasks := make([]runTask, 0, len(suite.Cases)*config.Trials*2)
 	for _, item := range suite.Cases {
@@ -78,10 +83,21 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	}
 	results, err := executeTasks(ctx, suite, agent, config, iteration, tasks)
 	if err != nil {
+		_ = writeJSON(filepath.Join(iteration, "evidence.json"), struct {
+			SchemaVersion string `json:"schema_version"`
+			Stage         string `json:"stage"`
+			Error         string `json:"error"`
+		}{SchemaVersion: workspaceSchemaVersion, Stage: "execution", Error: err.Error()})
 		return Report{Workspace: iteration}, err
 	}
-	graded, candidateWins, baselineWins, reasons, judgeOutput, err := gradeRuns(ctx, agent, suite, results, config)
+	graded, candidateWins, baselineWins, reasons, judgeOutput, err := gradeRuns(ctx, agent, suite, results, config, iteration)
 	if err != nil {
+		_ = writeJSON(filepath.Join(iteration, "evidence.json"), struct {
+			SchemaVersion string `json:"schema_version"`
+			Stage         string `json:"stage"`
+			Error         string `json:"error"`
+			JudgeOutput   string `json:"judge_output,omitempty"`
+		}{SchemaVersion: workspaceSchemaVersion, Stage: "grading", Error: err.Error(), JudgeOutput: judgeOutput})
 		return Report{Workspace: iteration}, err
 	}
 	benchmark := buildBenchmark(graded)
@@ -111,7 +127,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 		if !caseAssertionsPass(passedByCase[item.ID], config.StrictAllTrials) {
 			reasons = append(reasons, fmt.Sprintf("%s: candidate assertions did not satisfy the trial policy", item.ID))
 		}
-		if len(item.RequiredActions) > 0 && !caseAssertionsPass(actionsByCase[item.ID], config.StrictAllTrials) {
+		if len(item.RequiredActions) > 0 && !allTrialsPass(actionsByCase[item.ID]) {
 			reasons = append(reasons, fmt.Sprintf("%s: required actions were not observed in order", item.ID))
 		}
 	}
@@ -122,11 +138,12 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	report := Report{Passed: passed, Workspace: iteration, FailureCount: len(reasons), Reasons: reasons}
 	if !passed {
 		evidence := struct {
+			SchemaVersion string   `json:"schema_version"`
 			Reasons       []string `json:"reasons"`
 			CandidateWins int      `json:"candidate_wins"`
 			BaselineWins  int      `json:"baseline_wins"`
 			JudgeOutput   string   `json:"judge_output"`
-		}{Reasons: reasons, CandidateWins: candidateWins, BaselineWins: baselineWins, JudgeOutput: judgeOutput}
+		}{SchemaVersion: workspaceSchemaVersion, Reasons: reasons, CandidateWins: candidateWins, BaselineWins: baselineWins, JudgeOutput: judgeOutput}
 		if err := writeJSON(filepath.Join(iteration, "evidence.json"), evidence); err != nil {
 			return report, err
 		}
@@ -138,6 +155,33 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 		}
 	}
 	return report, nil
+}
+
+func allTrialsPass(values []bool) bool {
+	if len(values) == 0 {
+		return false
+	}
+	for _, value := range values {
+		if !value {
+			return false
+		}
+	}
+	return true
+}
+
+func writeManifest(iteration string, suite Suite, suiteDigest, runnerDigest string, identity harness.Identity, config Config) error {
+	return writeJSON(filepath.Join(iteration, "manifest.json"), struct {
+		SchemaVersion    string             `json:"schema_version"`
+		CreatedAt        time.Time          `json:"created_at"`
+		TargetKind       harness.TargetKind `json:"target_kind"`
+		TargetName       string             `json:"target_name"`
+		SuiteDigest      string             `json:"suite_digest"`
+		RunnerDigest     string             `json:"runner_digest"`
+		AgentIdentity    harness.Identity   `json:"agent_identity"`
+		Config           Config             `json:"config"`
+		GraderDigest     string             `json:"grader_prompt_digest"`
+		ComparatorDigest string             `json:"comparator_prompt_digest"`
+	}{SchemaVersion: workspaceSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: suite.Kind, TargetName: suite.Name, SuiteDigest: suiteDigest, RunnerDigest: runnerDigest, AgentIdentity: identity, Config: config, GraderDigest: promptDigest(graderPrompt), ComparatorDigest: promptDigest(comparatorPrompt)})
 }
 
 func executeTasks(ctx context.Context, suite Suite, agent harness.Harness, config Config, iteration string, tasks []runTask) ([]runResult, error) {

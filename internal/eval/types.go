@@ -32,18 +32,18 @@ func (c Case) effectiveAssertions() []string {
 }
 
 type Config struct {
-	Trials               int
-	Jobs                 int
-	Timeout              time.Duration
-	Model                string
-	ReasoningEffort      string
-	JudgeModel           string
-	JudgeReasoningEffort string
-	Sandbox              string
-	Network              bool
-	Workspace            string
-	StrictAllTrials      bool
-	NoCache              bool
+	Trials               int           `json:"trials"`
+	Jobs                 int           `json:"jobs"`
+	Timeout              time.Duration `json:"timeout"`
+	Model                string        `json:"model,omitempty"`
+	ReasoningEffort      string        `json:"reasoning_effort,omitempty"`
+	JudgeModel           string        `json:"judge_model,omitempty"`
+	JudgeReasoningEffort string        `json:"judge_reasoning_effort,omitempty"`
+	Sandbox              string        `json:"sandbox"`
+	Network              bool          `json:"network"`
+	Workspace            string        `json:"-"`
+	StrictAllTrials      bool          `json:"strict_all_trials"`
+	NoCache              bool          `json:"-"`
 }
 
 type Report struct {
@@ -80,19 +80,31 @@ type GradingSummary struct {
 type Grading struct {
 	AssertionResults []AssertionResult `json:"assertion_results"`
 	Summary          GradingSummary    `json:"summary"`
-	Preferred        string            `json:"preferred,omitempty"`
-	Reason           string            `json:"reason,omitempty"`
+}
+
+type Comparison struct {
+	SchemaVersion    string `json:"schema_version"`
+	ID               string `json:"id"`
+	Trial            int    `json:"trial"`
+	A                string `json:"A"`
+	B                string `json:"B"`
+	Preferred        string `json:"preferred"`
+	PreferredVariant string `json:"preferred_variant"`
+	Reason           string `json:"reason"`
 }
 
 type gradedRun struct {
-	CaseID      string
-	Trial       int
-	Variant     string
-	PassRate    float64
-	Passed      bool
-	TimeSeconds float64
-	Tokens      float64
+	CaseID          string
+	Trial           int
+	Variant         string
+	PassRate        float64
+	Passed          bool
+	TimeSeconds     float64
+	Tokens          float64
+	AssertionResult []AssertionResult
 }
+
+const workspaceSchemaVersion = "1"
 
 const (
 	variantWithSkill           = "with_skill"

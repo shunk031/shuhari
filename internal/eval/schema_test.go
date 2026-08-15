@@ -81,6 +81,23 @@ func TestLoadInstructionsSuite(t *testing.T) {
 	}
 }
 
+func TestLoadSkillSuiteRejectsNormalizedIDCollision(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "demo")
+	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
+	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{
+  "skill_name": "demo",
+  "evals": [
+    {"id":"a/b","prompt":"one","expected_output":"one"},
+    {"id":"a b","prompt":"two","expected_output":"two"}
+  ]
+}`)
+	if _, err := LoadSkillSuite(root); err == nil {
+		t.Fatal("LoadSkillSuite() accepted colliding workspace IDs")
+	}
+}
+
 func mustWrite(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

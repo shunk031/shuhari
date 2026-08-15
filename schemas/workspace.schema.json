@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shunk031/shuhari/schemas/workspace.schema.json",
+  "title": "Shuhari iteration manifest",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "target_kind": { "enum": ["skill", "instructions"] },
+    "target_name": { "type": "string", "minLength": 1 },
+    "suite_digest": { "type": "string", "minLength": 1 },
+    "runner_digest": { "type": "string", "minLength": 1 },
+    "agent_identity": { "type": "object" },
+    "config": { "type": "object" },
+    "grader_prompt_digest": { "type": "string", "minLength": 1 },
+    "comparator_prompt_digest": { "type": "string", "minLength": 1 }
+  },
+  "required": ["schema_version", "created_at", "target_kind", "target_name", "suite_digest", "runner_digest", "agent_identity", "config"],
+  "additionalProperties": false
+}
