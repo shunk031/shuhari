@@ -4,7 +4,7 @@
 
 ## Supported agents
 
-- [x] [Codex CLI](https://developers.openai.com/codex/)
+- [x] [Codex CLI](https://developers.openai.com/codex/): install `codex`, put it on your `PATH`, and sign in with `codex login` before running Shuhari.
 - [ ] Claude Code
 - [ ] Gemini CLI
 - [ ] Antigravity
@@ -12,10 +12,6 @@
 Each agent is integrated through a narrow adapter; eval schemas, workspace artifacts, and repository policy stay the same across agents. The unchecked agents are candidates, not commitments. See the [development architecture contract](docs/architecture.md) for what an adapter must provide.
 
 ## Install
-
-### Prerequisites
-
-Shuhari drives the [Codex CLI](https://developers.openai.com/codex/noninteractive/), the one supported agent today. Install `codex`, put it on your `PATH`, and sign in with `codex login` before running Shuhari.
 
 ### GitHub Releases
 
