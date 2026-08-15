@@ -24,6 +24,8 @@ jobs:
         run: go test -race ./...
       - name: Vet
         run: go vet ./...
+      - name: Lint workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Build
         run: go build ./cmd/shuhari
 

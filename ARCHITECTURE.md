@@ -55,7 +55,7 @@ cmd/shuhari
 - `internal/skill` reads and validates shared `SKILL.md` metadata.
 - `internal/eval` loads skill or instructions cases, stages fixtures, runs candidate/baseline pairs, grades them, aggregates trials, and writes the Agent Skills workspace.
 - `internal/trigger` loads near-miss and positive cases, measures target reads, applies trigger policy, and writes trigger evidence.
-- `internal/harness` defines the agent-neutral request/result boundary and contains the Codex adapter. It also isolates `CODEX_HOME`, removes caller-local Git and Herdr state, invokes `codex exec --ephemeral --json`, and parses structured events.
+- `internal/harness` defines the agent-neutral request/result boundary and contains the Codex adapter. It also isolates `CODEX_HOME`, passes a minimal allowlisted environment, invokes `codex exec --ephemeral --json`, and parses structured events.
 - `internal/cache` stores only successful results. Cache keys include the runner binary so evaluator changes invalidate prior results.
 
 There is no public Go SDK or dynamic plugin registry. A new agent is added as a concrete harness implementation only when its CLI can provide the required isolation and evidence. The CLI schemas, workspace layout, and repository policy remain independent of that adapter.
@@ -65,8 +65,13 @@ There is no public Go SDK or dynamic plugin registry. A new agent is added as a 
 1. The CLI resolves and strictly validates the target and its cases.
 2. The engine creates a new `iteration-N` directory and schedules a bounded number of candidate/baseline runs.
 3. Every run receives a fresh temporary Git repository and isolated agent home. Fixtures are copied into the repository; produced files and the final response are copied into the durable workspace.
-4. One structured grader invocation receives blinded A/B artifacts. Its response is checked for complete case, trial, and assertion coverage before grades are accepted.
-5. Candidate assertion results are aggregated per case. The default is majority; `--strict-all-trials` requires all trials. The comparison also requires candidate wins to be at least baseline wins.
-6. `benchmark.json` records the candidate-minus-baseline differences in assertion pass rate, time, and token use. A passing result enters the cache; a failure retains evidence but never enters the cache.
+4. A structured grader receives blinded A/B artifacts. Its response is checked for complete case, trial, assertion, and quoted-evidence coverage before grades are accepted.
+5. A separate blind comparator receives the original task and both artifacts. Its unblinded mapping and decision are stored independently from assertion grades.
+6. Candidate assertion results are aggregated per case. The default is majority; `--strict-all-trials` requires all trials. Required actions always require every trial. The comparison also requires candidate wins to be at least baseline wins.
+7. `benchmark.json` records candidate-minus-baseline differences and assertion audit categories. A passing result enters the cache; a failure retains evidence but never enters the cache.
 
 Trigger checks use the same isolation and bounded scheduling, but not the output grader. They measure whether the agent read the installed skill. Positive cases use majority by default, while negative controls always require zero reads.
+
+## Integration boundary
+
+The staged-target wrapper that maps pre-commit changes to Shuhari targets remains a consuming-repository follow-up. Document slop review cannot import Go internals; its runner and subprocess boundary is also an unspecified follow-up.

@@ -14,7 +14,7 @@ shuhari check trigger <skill-path>
 
 ## Install
 
-Install a release from GitHub with [mise](https://mise.jdx.dev/dev-tools/backends/ubi.html):
+Install a release from GitHub with the [mise GitHub backend](https://mise.jdx.dev/dev-tools/backends/github.html):
 
 ```sh
 mise use -g github:shunk031/shuhari
@@ -58,12 +58,13 @@ Run the evaluation:
 shuhari eval skill path/to/csv-analyzer
 ```
 
-Each case runs in fresh temporary Git repositories. The candidate has the skill installed; the baseline does not. A blind grader evaluates both output artifacts and writes an iteration beside the skill by default:
+Each case runs in fresh temporary Git repositories. The candidate has the skill installed; the baseline does not. An assertion grader evaluates both output artifacts. A separate blind comparator receives the original task and chooses the more useful result without knowing which variant it represents. Shuhari writes an iteration beside the skill by default:
 
 ```text
 csv-analyzer-workspace/
 └── iteration-1/
     ├── eval-1/
+    │   ├── comparison.json
     │   ├── with_skill/
     │   │   ├── outputs/
     │   │   ├── transcript.jsonl
@@ -71,10 +72,11 @@ csv-analyzer-workspace/
     │   │   └── grading.json
     │   └── without_skill/
     │       └── ...
-    └── benchmark.json
+    ├── benchmark.json
+    └── manifest.json
 ```
 
-With multiple trials, trial 1 occupies the canonical path above and later trials are stored under `trials/<N>/`. `benchmark.json` contains pass-rate, time, and token statistics plus with-minus-without deltas.
+With multiple trials, trial 1 occupies the canonical path above and later trials are stored under `trials/<N>/`. `benchmark.json` contains pass-rate, time, and token statistics, with-minus-without deltas, and deterministic assertion audit categories. `manifest.json` records schema version, input and runner digests, agent identity, effective settings, and both judge-prompt digests. Checked-in JSON Schemas under [`schemas/`](schemas/) define the input and durable artifact contracts.
 
 ## Evaluate instructions
 
@@ -164,9 +166,9 @@ On hosts where the Codex sandbox cannot start but the surrounding environment al
 SHUHARI_SANDBOX=danger-full-access shuhari eval skill path/to/skill
 ```
 
-`required_actions` is an optional Shuhari extension for cases that must observe `web_search`, `github_search`, or `file_change` in order. It checks trace evidence and never enables network access implicitly.
+`required_actions` is an optional Shuhari extension for cases that must observe `web_search`, `github_search`, or `file_change` in order. It checks successful trace evidence, requires the ordered actions in every trial, and never enables network access implicitly.
 
-Successful runs are cached by the target contents, policy, agent identity/configuration, grader prompt, and Shuhari binary. Failed runs are not cached; their iteration remains available with `evidence.json` and the complete per-run artifacts. Use `--no-cache` for a fresh run.
+Successful runs are cached by the target contents and filenames, effective policy, agent executable/configuration/environment identity, both judge prompts, and Shuhari binary. Failed runs are not cached; their iteration remains available with machine-readable error evidence and completed per-run artifacts. Use `--no-cache` for a fresh run.
 
 Exit status is `0` for a pass, `1` for an evaluation or trigger-policy failure, and `2` for invalid input or an execution error.
 
