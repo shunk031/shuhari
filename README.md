@@ -187,7 +187,7 @@ Changed files passed to `eval skill` are resolved to the nearest `SKILL.md` and 
 
 ### Configure evaluation runs
 
-Runs are sandboxed and offline by default. The default sandbox is `workspace-write`; enable network access only for cases that need it:
+Runs are sandboxed and offline by default, whichever agent executes them. Sandbox level names come from the agent adapter; with the Codex adapter the default is `workspace-write`. Enable network access only for cases that need it:
 
 ```sh
 shuhari eval skill path/to/skill --network
@@ -209,3 +209,7 @@ shuhari eval skill path/to/skill
 ```
 
 This override removes the agent's filesystem and network boundary, so Shuhari refuses to start without the acknowledgement variable and labels the resulting verdict artifacts with `credential_boundary: none`. The [credential boundary](docs/architecture.md#credential-boundary) documentation explains exactly what protection remains in this mode.
+
+## License
+
+[MIT](LICENSE)
