@@ -51,7 +51,7 @@ func TestCodexDefaultSandboxDeniesChildCredentialReads(t *testing.T) {
 			}
 
 			t.Setenv("CODEX_HOME", sourceHome)
-			request := Request{WorkDir: workDir, Sandbox: sandbox}
+			request := Request{WorkDir: workDir, Sandbox: sandbox, Network: true}
 			if err := writeCodexProfile(codexHome, request); err != nil {
 				t.Fatal(err)
 			}
