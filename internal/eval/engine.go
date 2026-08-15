@@ -292,7 +292,6 @@ func buildRunPrompt(item Case, files []string, outputDir string, target *harness
 		fmt.Fprintf(&builder, "- Use the available %s named %q.\n", target.Kind, target.Name)
 	}
 	fmt.Fprintf(&builder, "- Task: %s\n", item.Prompt)
-	fmt.Fprintf(&builder, "- Expected output: %s\n", item.ExpectedOutput)
 	if len(files) > 0 {
 		fmt.Fprintf(&builder, "- Input files: %s\n", strings.Join(files, ", "))
 	}

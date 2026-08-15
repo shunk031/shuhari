@@ -221,3 +221,16 @@ func preferredLabel(mapping blindMapping, variant string) string {
 	}
 	return "B"
 }
+
+func TestBuildRunPromptDoesNotLeakEvaluatorExpectedOutput(t *testing.T) {
+	t.Parallel()
+
+	item := Case{Prompt: "perform the task", ExpectedOutput: "SECRET EXPECTED ANSWER"}
+	prompt := buildRunPrompt(item, []string{"input.txt"}, "/workspace/outputs", nil)
+	if strings.Contains(prompt, item.ExpectedOutput) || strings.Contains(prompt, "Expected output") {
+		t.Fatalf("run prompt leaked evaluator-only expected output: %q", prompt)
+	}
+	if !strings.Contains(prompt, item.Prompt) {
+		t.Fatalf("run prompt omitted task: %q", prompt)
+	}
+}
