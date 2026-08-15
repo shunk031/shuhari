@@ -1,5 +1,7 @@
 # Shuhari
 
+[![CI](https://github.com/shunk031/shuhari/actions/workflows/ci.yml/badge.svg)](https://github.com/shunk031/shuhari/actions/workflows/ci.yml)
+
 [`Shuhari` (守破離)](https://en.wikipedia.org/wiki/Shuhari) evaluates skills and persistent instructions against real coding agents. It follows the [Agent Skills evaluation workflow](https://agentskills.io/skill-creation/evaluating-skills): run each case in a clean context with and without the guidance, grade assertions with evidence, and retain outputs, timing, and aggregate statistics in an iteration workspace.
 
 ## Supported agents
