@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -171,6 +172,13 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 	if err := initializeCodexHome(codexHome); err != nil {
 		return Result{}, err
 	}
+	if err := writeCodexProfile(codexHome, request); err != nil {
+		return Result{}, err
+	}
+	before, err := workspaceState(request.WorkDir)
+	if err != nil {
+		return Result{}, err
+	}
 
 	args := []string{"--disable", "plugins", "exec"}
 	if request.Model != "" {
@@ -180,13 +188,14 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 		value, _ := json.Marshal(request.ReasoningEffort)
 		args = append(args, "-c", "model_reasoning_effort="+string(value))
 	}
-	if request.Network {
-		args = append(args, "-c", "sandbox_workspace_write.network_access=true")
-	}
 	if override := disabledSkillsOverride(); override != "" {
 		args = append(args, "-c", override)
 	}
-	args = append(args, "--ephemeral", "--json", "--sandbox", EffectiveSandbox(request.Sandbox), "--cd", request.WorkDir)
+	args = append(args, "--profile", "shuhari", "--ephemeral", "--json")
+	if request.Sandbox == "danger-full-access" {
+		args = append(args, "--sandbox", request.Sandbox)
+	}
+	args = append(args, "--cd", request.WorkDir)
 	if len(request.OutputSchema) > 0 {
 		schemaPath := filepath.Join(temporary, "output-schema.json")
 		if err := os.WriteFile(schemaPath, request.OutputSchema, 0o600); err != nil {
@@ -220,12 +229,19 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 		}
 		return Result{}, fmt.Errorf("codex failed: %w: %s", err, message)
 	}
+	after, err := workspaceState(request.WorkDir)
+	if err != nil {
+		return Result{}, err
+	}
 	result, err := parseCodexTrace(stdout.Bytes(), targetOrEmpty(request.Target))
 	if err != nil {
 		return Result{}, err
 	}
 	result.Transcript = append([]byte(nil), stdout.Bytes()...)
 	result.Duration = duration
+	if statesDiffer(before, after) && !containsAction(result.Actions, ActionFileChange) {
+		result.Actions = append(result.Actions, ActionFileChange)
+	}
 	return result, nil
 }
 
@@ -238,6 +254,10 @@ func targetOrEmpty(target *Target) Target {
 
 func parseCodexTrace(trace []byte, target Target) (Result, error) {
 	result := Result{TargetRead: target.Kind == TargetInstructions}
+	skillContents, err := targetSkillContents(target)
+	if err != nil {
+		return Result{}, err
+	}
 	type actionObservation struct {
 		Index  int
 		Action Action
@@ -285,6 +305,7 @@ func parseCodexTrace(trace []byte, target Target) (Result, error) {
 				Query    string `json:"query"`
 				Status   string `json:"status"`
 				ExitCode *int   `json:"exit_code"`
+				Output   string `json:"aggregated_output"`
 			}
 			if err := json.Unmarshal(event.Item, &item); err != nil {
 				return Result{}, fmt.Errorf("decode Codex item event %d: %w", eventIndex, err)
@@ -311,7 +332,7 @@ func parseCodexTrace(trace []byte, target Target) (Result, error) {
 				if event.Type != "item.completed" || item.Status != "completed" || (item.ExitCode != nil && *item.ExitCode != 0) {
 					continue
 				}
-				if target.Kind == TargetSkill && commandReadsSkill(item.Command, target.Name) {
+				if target.Kind == TargetSkill && skillContents != "" && strings.Contains(item.Output, skillContents) {
 					targetReadEvents = append(targetReadEvents, eventIndex)
 				}
 				for _, action := range classifyCommand(item.Command) {
@@ -343,22 +364,24 @@ func parseCodexTrace(trace []byte, target Target) (Result, error) {
 }
 
 var (
-	githubCommand = regexp.MustCompile(`(?i)\b(?:gh\s+(?:api|browse|repo|search)|git\s+(?:clone|fetch)|curl|wget)\b.*(?:github\.com|githubusercontent\.com)`)
-	webCommand    = regexp.MustCompile(`(?i)\b(?:curl|wget)\b.*https?://`)
-	readCommand   = regexp.MustCompile(`(?i)(?:\b(?:cat|sed|awk|grep|rg|head|tail|less|more|bat|nl|wc|cut|sort|uniq|sha1sum|sha256sum|sha512sum)\b|(?:open|read_text|readFile|readFileSync)\s*\()`)
+	githubCLICommand = regexp.MustCompile(`(?i)\bgh\s+(?:api|browse|repo|search)\b`)
+	githubURLCommand = regexp.MustCompile(`(?i)\b(?:git\s+(?:clone|fetch)|curl|wget)\b.*(?:github\.com|githubusercontent\.com)`)
+	webCommand       = regexp.MustCompile(`(?i)\b(?:curl|wget)\b.*https?://`)
 )
 
-func commandReadsSkill(command, skillName string) bool {
-	normalized := filepath.ToSlash(command)
-	directory := filepath.ToSlash(filepath.Join("skills", skillName))
-	marker := directory + "/SKILL.md"
-	mentionsTarget := strings.Contains(normalized, marker) ||
-		(strings.Contains(normalized, directory) && strings.Contains(normalized, "SKILL.md"))
-	return mentionsTarget && readCommand.MatchString(command)
+func targetSkillContents(target Target) (string, error) {
+	if target.Kind != TargetSkill {
+		return "", nil
+	}
+	contents, err := os.ReadFile(filepath.Join(target.SourcePath, "SKILL.md"))
+	if err != nil {
+		return "", fmt.Errorf("read target skill evidence: %w", err)
+	}
+	return string(contents), nil
 }
 
 func classifyCommand(command string) []Action {
-	if githubCommand.MatchString(command) {
+	if githubCLICommand.MatchString(command) || githubURLCommand.MatchString(command) {
 		return []Action{ActionGitHubSearch}
 	}
 	if webCommand.MatchString(command) {
@@ -448,17 +471,13 @@ func initializeCodexHome(destination string) error {
 	if err := os.MkdirAll(destination, 0o700); err != nil {
 		return fmt.Errorf("create codex home: %w", err)
 	}
-	source := os.Getenv("CODEX_HOME")
-	if source == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("find home directory: %w", err)
-		}
-		source = filepath.Join(home, ".codex")
+	source, err := sourceCodexHome()
+	if err != nil {
+		return err
 	}
 	for _, name := range []string{"config.toml", "auth.json"} {
 		from := filepath.Join(source, name)
-		info, err := os.Stat(from)
+		_, err := os.Stat(from)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -469,11 +488,166 @@ func initializeCodexHome(destination string) error {
 		if err != nil {
 			return fmt.Errorf("read codex %s: %w", name, err)
 		}
-		if err := os.WriteFile(filepath.Join(destination, name), contents, info.Mode().Perm()); err != nil {
+		if err := os.WriteFile(filepath.Join(destination, name), contents, 0o600); err != nil {
 			return fmt.Errorf("copy codex %s: %w", name, err)
 		}
 	}
 	return nil
+}
+
+func sourceCodexHome() (string, error) {
+	if source := os.Getenv("CODEX_HOME"); source != "" {
+		return source, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("find home directory: %w", err)
+	}
+	return filepath.Join(home, ".codex"), nil
+}
+
+func writeCodexProfile(codexHome string, request Request) error {
+	commandHome := filepath.Join(request.WorkDir, ".shuhari", "home")
+	commandTmp := filepath.Join(request.WorkDir, ".shuhari", "tmp")
+	for _, path := range []string{commandHome, commandTmp} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return fmt.Errorf("create isolated command directory: %w", err)
+		}
+	}
+	var builder strings.Builder
+	if request.Sandbox != "danger-full-access" {
+		builder.WriteString("default_permissions = \"shuhari-eval\"\n\n")
+	}
+	builder.WriteString("[shell_environment_policy]\ninherit = \"none\"\nignore_default_excludes = false\n\n")
+	builder.WriteString("[shell_environment_policy.set]\n")
+	builder.WriteString("CODEX_HOME = \"\"\n")
+	fmt.Fprintf(&builder, "HOME = %s\n", tomlString(commandHome))
+	commandPath, commandTools := isolatedCommandPath()
+	fmt.Fprintf(&builder, "PATH = %s\n", tomlString(commandPath))
+	fmt.Fprintf(&builder, "TMPDIR = %s\n", tomlString(commandTmp))
+	builder.WriteString("LANG = \"C.UTF-8\"\n")
+	if request.Sandbox != "danger-full-access" {
+		access := "write"
+		if request.Sandbox == "read-only" {
+			access = "read"
+		} else if request.Sandbox != "workspace-write" {
+			return fmt.Errorf("unsupported Codex sandbox %q", request.Sandbox)
+		}
+		builder.WriteString("\n[permissions.shuhari-eval]\ndescription = \"Shuhari isolated evaluation\"\n\n")
+		builder.WriteString("[permissions.shuhari-eval.filesystem]\n\":minimal\" = \"read\"\n")
+		fmt.Fprintf(&builder, "%s = \"deny\"\n", tomlString(codexHome))
+		if source, err := sourceCodexHome(); err == nil {
+			fmt.Fprintf(&builder, "%s = \"deny\"\n", tomlString(source))
+		}
+		for _, tool := range commandTools {
+			fmt.Fprintf(&builder, "%s = \"read\"\n", tomlString(tool))
+		}
+		builder.WriteString("\n[permissions.shuhari-eval.filesystem.\":workspace_roots\"]\n")
+		fmt.Fprintf(&builder, "\".\" = %s\n", tomlString(access))
+		builder.WriteString("\n[permissions.shuhari-eval.network]\n")
+		fmt.Fprintf(&builder, "enabled = %t\n", request.Network)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "shuhari.config.toml"), []byte(builder.String()), 0o600); err != nil {
+		return fmt.Errorf("write isolated Codex profile: %w", err)
+	}
+	return nil
+}
+
+func tomlString(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func isolatedCommandPath() (string, []string) {
+	if runtime.GOOS == "windows" {
+		return `C:\Windows\System32;C:\Windows`, nil
+	}
+	directories := []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"}
+	var tools []string
+	if path, err := exec.LookPath("gh"); err == nil {
+		directory := filepath.Dir(path)
+		found := false
+		for _, existing := range directories {
+			if existing == directory {
+				found = true
+				break
+			}
+		}
+		if !found {
+			directories = append(directories, directory)
+			tools = append(tools, path)
+		}
+	}
+	return strings.Join(directories, string(os.PathListSeparator)), tools
+}
+
+type workspaceFileState struct {
+	Mode   fs.FileMode
+	Digest string
+}
+
+func workspaceState(root string) (map[string]workspaceFileState, error) {
+	state := map[string]workspaceFileState{}
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() && (relative == ".git" || relative == ".shuhari") {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() || relative == "." {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		var contents []byte
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			contents = []byte(target)
+		} else if info.Mode().IsRegular() {
+			contents, err = os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+		}
+		digest := sha256.Sum256(contents)
+		state[filepath.ToSlash(relative)] = workspaceFileState{Mode: info.Mode(), Digest: hex.EncodeToString(digest[:])}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("snapshot evaluated workspace state: %w", err)
+	}
+	return state, nil
+}
+
+func statesDiffer(before, after map[string]workspaceFileState) bool {
+	if len(before) != len(after) {
+		return true
+	}
+	for path, state := range before {
+		if after[path] != state {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAction(actions []Action, expected Action) bool {
+	for _, action := range actions {
+		if action == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func disabledSkillsOverride() string {
