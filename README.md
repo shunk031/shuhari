@@ -187,7 +187,7 @@ Shuhari implements the portable evaluation mechanism; each consuming repository 
       pass_filenames: false
 ```
 
-Changed files passed to `eval skill` are resolved to the nearest `SKILL.md` and deduplicated. Use `--validate-only` for a fast schema and fixture check that does not start an agent.
+Changed files passed to `eval skill` are resolved to the nearest `SKILL.md` and deduplicated. Use `--validate-only` for a fast schema and fixture check that does not start an agent. The hook consumes Shuhari's exit status: `0` is a pass, `1` is an evaluation or trigger-policy failure, and `2` is invalid input or an execution error.
 
 ### Configure evaluation runs
 
@@ -198,8 +198,6 @@ shuhari eval skill path/to/skill --network
 ```
 
 Successful runs are cached, so re-running an unchanged evaluation is instant; any change to the inputs, policy, agent identity, or judge prompts invalidates the cache, and `manifest.json` records those identities. Failed runs are never cached and keep their error evidence and per-run artifacts in the iteration workspace. Use `--no-cache` to force a fresh run.
-
-Exit status is `0` for a pass, `1` for an evaluation or trigger-policy failure, and `2` for invalid input or an execution error.
 
 Two advanced mechanisms have their own reference documentation:
 
