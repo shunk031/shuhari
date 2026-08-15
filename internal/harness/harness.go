@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -62,9 +63,11 @@ type Result struct {
 }
 
 type Identity struct {
-	Agent        string
-	Version      string
-	ConfigDigest string
+	Agent             string `json:"agent"`
+	Version           string `json:"version"`
+	ConfigDigest      string `json:"config_digest,omitempty"`
+	ExecutableDigest  string `json:"executable_digest,omitempty"`
+	EnvironmentDigest string `json:"environment_digest,omitempty"`
 }
 
 type Capabilities struct {
@@ -93,6 +96,16 @@ func New(name string, config Config) (Harness, error) {
 }
 
 var ErrTransient = errors.New("transient agent failure")
+
+func EffectiveSandbox(requested string) string {
+	if override := os.Getenv("SHUHARI_SANDBOX"); override != "" {
+		return override
+	}
+	if requested == "" {
+		return "workspace-write"
+	}
+	return requested
+}
 
 func ContainsOrderedActions(observed, required []Action) bool {
 	position := 0
