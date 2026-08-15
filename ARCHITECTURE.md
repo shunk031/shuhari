@@ -55,7 +55,7 @@ cmd/shuhari
 - `internal/skill` reads and validates shared `SKILL.md` metadata.
 - `internal/eval` loads skill or instructions cases, stages fixtures, runs candidate/baseline pairs, grades them, aggregates trials, and writes the Agent Skills workspace.
 - `internal/trigger` loads near-miss and positive cases, measures target reads, applies trigger policy, and writes trigger evidence.
-- `internal/harness` defines the agent-neutral request/result boundary and contains the Codex adapter. It also isolates `CODEX_HOME`, passes a minimal allowlisted environment, invokes `codex exec --ephemeral --json`, and parses structured events.
+- `internal/harness` defines the agent-neutral request/result boundary and contains the Codex adapter. It gives the Codex client an isolated `CODEX_HOME`, gives model-generated commands a separate minimal environment, invokes `codex exec --ephemeral --json`, and parses structured events.
 - `internal/cache` stores only successful results. Cache keys include the runner binary so evaluator changes invalidate prior results.
 
 There is no public Go SDK or dynamic plugin registry. A new agent is added as a concrete harness implementation only when its CLI can provide the required isolation and evidence. The CLI schemas, workspace layout, and repository policy remain independent of that adapter.
@@ -64,13 +64,25 @@ There is no public Go SDK or dynamic plugin registry. A new agent is added as a 
 
 1. The CLI resolves and strictly validates the target and its cases.
 2. The engine creates a new `iteration-N` directory and schedules a bounded number of candidate/baseline runs.
-3. Every run receives a fresh temporary Git repository and isolated agent home. Fixtures are copied into the repository; produced files and the final response are copied into the durable workspace.
+3. Every run receives a fresh temporary Git repository and isolated agent home. Fixtures are copied into the repository; evaluator-only fields such as `expected_output` are not included in the run prompt. Produced files and the final response are copied into the durable workspace.
 4. A structured grader receives blinded A/B artifacts. Its response is checked for complete case, trial, assertion, and quoted-evidence coverage before grades are accepted.
 5. A separate blind comparator receives the original task and both artifacts. Its unblinded mapping and decision are stored independently from assertion grades.
 6. Candidate assertion results are aggregated per case. The default is majority; `--strict-all-trials` requires all trials. Required actions always require every trial. The comparison also requires candidate wins to be at least baseline wins.
 7. `benchmark.json` records candidate-minus-baseline differences and assertion audit categories. A passing result enters the cache; a failure retains evidence but never enters the cache.
 
-Trigger checks use the same isolation and bounded scheduling, but not the output grader. They measure whether the agent read the installed skill. Positive cases use majority by default, while negative controls always require zero reads.
+Trigger checks use the same isolation and bounded scheduling, but not the output grader. A skill read is observed only when a successful pre-response command emits the complete `SKILL.md` body; command names and path mentions are not evidence. Positive cases use majority by default, while negative controls always require zero reads.
+
+## Credential boundary
+
+The Codex client needs authentication while model-generated commands must not receive it. Shuhari therefore separates the two environments. The client process receives a temporary `CODEX_HOME` containing mode-0600 configuration and, when present, authentication files. Its generated profile sets command environment inheritance to `none`, supplies a synthetic `HOME` and curated command `PATH`, and sets command-side `CODEX_HOME` to an empty value.
+
+For `workspace-write` and `read-only`, Shuhari selects a custom permission profile. It grants commands only the minimal runtime paths and the evaluation workspace, and explicitly denies both the source and temporary Codex home. This is the supported credential-isolation boundary.
+
+`danger-full-access` disables Codex filesystem and network sandboxing. A same-UID command can search host paths even though direct variables such as `HOME` and `CODEX_HOME` are removed from its environment. Shuhari cannot provide strict credential isolation in that mode. Use it only inside an external container or equivalent host boundary that contains no credentials beyond those needed by the Codex client; `--network=false` is not an egress guarantee in this mode.
+
+## Action evidence
+
+Native successful file-change events retain their trace order. Shuhari also compares the workspace before and after the run so successful shell writes such as `cp` and redirection satisfy `file_change`; this fallback observation is placed after trace-observed actions. Standard `gh api`, `gh search`, `gh repo`, and `gh browse` commands satisfy `github_search` without requiring a literal GitHub URL.
 
 ## Integration boundary
 

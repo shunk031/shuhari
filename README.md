@@ -166,7 +166,9 @@ On hosts where the Codex sandbox cannot start but the surrounding environment al
 SHUHARI_SANDBOX=danger-full-access shuhari eval skill path/to/skill
 ```
 
-`required_actions` is an optional Shuhari extension for cases that must observe `web_search`, `github_search`, or `file_change` in order. It checks successful trace evidence, requires the ordered actions in every trial, and never enables network access implicitly.
+This override removes Codex's command filesystem and network boundary. Shuhari still removes credential paths from the generated command environment, but same-UID commands can search the host filesystem. Use the override only inside an external container or equivalent credential-free boundary. See [Credential boundary](ARCHITECTURE.md#credential-boundary).
+
+`required_actions` is an optional Shuhari extension for cases that must observe `web_search`, `github_search`, or `file_change` in order. It checks successful trace evidence and workspace effects, requires the ordered actions in every trial, and never enables network access implicitly.
 
 Successful runs are cached by the target contents and filenames, effective policy, agent executable/configuration/environment identity, both judge prompts, and Shuhari binary. Failed runs are not cached; their iteration remains available with machine-readable error evidence and completed per-run artifacts. Use `--no-cache` for a fresh run.
 
