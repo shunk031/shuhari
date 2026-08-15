@@ -2,9 +2,20 @@
 
 [`Shuhari` (守破離)](https://en.wikipedia.org/wiki/Shuhari) evaluates skills and persistent instructions against real coding agents. It follows the [Agent Skills evaluation workflow](https://agentskills.io/skill-creation/evaluating-skills): run each case in a clean context with and without the guidance, grade assertions with evidence, and retain outputs, timing, and aggregate statistics in an iteration workspace.
 
+## Supported agents
+
+- [x] [Codex CLI](https://developers.openai.com/codex/)
+- [ ] Claude Code
+- [ ] Gemini CLI
+- [ ] Antigravity
+
+Each agent is integrated through a narrow adapter; eval schemas, workspace artifacts, and repository policy stay the same across agents. The unchecked agents are candidates, not commitments. See the [development architecture contract](docs/architecture.md) for what an adapter must provide.
+
 ## Install
 
-The initial release runs evaluations through the [Codex CLI](https://developers.openai.com/codex/noninteractive/). Install `codex`, put it on your `PATH`, and sign in with `codex login` before running Shuhari. For each run, Shuhari copies the existing Codex login and settings into a private temporary directory for the Codex client, then deletes that directory. It does not install Codex, keep a persistent credential store, or manage the login itself.
+### Prerequisites
+
+Shuhari drives the [Codex CLI](https://developers.openai.com/codex/noninteractive/), the one supported agent today. Install `codex`, put it on your `PATH`, and sign in with `codex login` before running Shuhari.
 
 ### GitHub Releases
 
@@ -60,7 +71,7 @@ Place `evals/evals.json` inside the skill directory:
 }
 ```
 
-`prompt`, `expected_output`, and `files` follow the Agent Skills guide. Add `assertions` after inspecting the first run; when they are omitted, Shuhari grades the human-readable `expected_output`. File paths are relative to the skill root and cannot escape it.
+`prompt`, `expected_output`, and `files` follow the [Agent Skills guide](https://agentskills.io/skill-creation/evaluating-skills). Add `assertions` after inspecting the first run; when they are omitted, Shuhari grades the human-readable `expected_output`. File paths are relative to the skill root and cannot escape it.
 
 ### Evaluate a skill
 
@@ -156,7 +167,7 @@ shuhari check trigger path/to/csv-analyzer --trials 3 --jobs 2 --timeout 600
 
 ### Add a repository gate
 
-Shuhari implements the portable evaluation mechanism. Each consuming repository owns file selection and policy values such as trials, concurrency, timeout, network access, and pre-commit `SKIP` behavior. Keep those values explicit in the hook:
+Shuhari implements the portable evaluation mechanism; each consuming repository decides when it runs and with what policy. A typical setup invokes Shuhari from a [pre-commit](https://github.com/pre-commit/pre-commit) hook or a CI job. The repository owns file selection and policy values such as trials, concurrency, timeout, and network access, and it owns skip conventions such as pre-commit's `SKIP` environment variable. Write those values explicitly in the hook or job definition instead of relying on defaults:
 
 ```yaml
 - repo: local
@@ -180,13 +191,22 @@ Changed files passed to `eval skill` are resolved to the nearest `SKILL.md` and 
 
 ### Configure evaluation runs
 
-The default sandbox is `workspace-write`. Enable network access only for cases that need it:
+Runs are sandboxed and offline by default. The default sandbox is `workspace-write`; enable network access only for cases that need it:
 
 ```sh
 shuhari eval skill path/to/skill --network
 ```
 
-On hosts where the Codex sandbox cannot start but the surrounding environment already provides isolation, override it explicitly:
+Successful runs are cached, so re-running an unchanged evaluation is instant; any change to the inputs, policy, agent identity, or judge prompts invalidates the cache, and `manifest.json` records those identities. Failed runs are never cached and keep their error evidence and per-run artifacts in the iteration workspace. Use `--no-cache` to force a fresh run.
+
+Exit status is `0` for a pass, `1` for an evaluation or trigger-policy failure, and `2` for invalid input or an execution error.
+
+Two advanced mechanisms have their own reference documentation:
+
+- Credential handling: for each run, Shuhari copies the agent's existing login and settings into a private temporary directory for the agent client, then deletes that directory; evaluated commands run in a separate minimal environment that cannot read it. Shuhari never keeps a persistent credential store or manages the login itself. See the [credential boundary](docs/architecture.md#credential-boundary).
+- `required_actions`: an optional per-case contract that requires observed actions such as `web_search`, `github_search`, or `file_change` in every trial. See [action evidence](docs/architecture.md#action-evidence) for what counts as evidence and how ordering is matched.
+
+On hosts where the agent's own sandbox cannot start but the surrounding environment already provides isolation (for example, an isolated CI runner or container), the sandbox can be overridden explicitly:
 
 ```sh
 SHUHARI_SANDBOX=danger-full-access \
@@ -194,12 +214,4 @@ SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY=1 \
 shuhari eval skill path/to/skill
 ```
 
-This override removes Codex's command filesystem and network boundary. Shuhari refuses it without the explicit acknowledgement above, and labels its verdict artifacts with `credential_boundary: none`. Use it only when an isolated runner or container supplies the outer security boundary. See the [credential boundary](docs/architecture.md#credential-boundary).
-
-`required_actions` is an optional Shuhari extension for cases that must observe `web_search`, `github_search`, or `file_change` in order. It checks successful trace evidence and workspace effects in every trial and never enables network access implicitly. Workspace-diff file changes have unknown order; see [Action evidence](docs/architecture.md#action-evidence) before relying on their position relative to another action.
-
-Successful runs are cached by the target contents and filenames, effective policy, agent executable/configuration/environment identity, both judge prompts, and Shuhari binary. Failed runs are not cached; their iteration remains available with machine-readable error evidence and completed per-run artifacts. Use `--no-cache` for a fresh run.
-
-Exit status is `0` for a pass, `1` for an evaluation or trigger-policy failure, and `2` for invalid input or an execution error.
-
-Codex is the only adapter in the initial release. Other coding-agent CLIs can implement the same narrow execution boundary without changing eval schemas or workspace artifacts. See the [development architecture contract](docs/architecture.md) for package responsibilities and extension boundaries.
+This override removes the agent's filesystem and network boundary, so Shuhari refuses to start without the acknowledgement variable and labels the resulting verdict artifacts with `credential_boundary: none`. The [credential boundary](docs/architecture.md#credential-boundary) documentation explains exactly what protection remains in this mode.
