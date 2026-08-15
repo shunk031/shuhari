@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,7 +14,10 @@ import (
 	"github.com/shunk031/shuhari/internal/harness"
 )
 
-type triggerHarness struct{}
+type triggerHarness struct {
+	mu   sync.Mutex
+	runs int
+}
 
 func (*triggerHarness) Probe(context.Context) (harness.Identity, error) {
 	return harness.Identity{Agent: "fake", Version: "1"}, nil
@@ -23,7 +27,10 @@ func (*triggerHarness) Capabilities() harness.Capabilities {
 	return harness.Capabilities{Skills: true, TriggerEvidence: true}
 }
 
-func (*triggerHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
+func (h *triggerHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
+	h.mu.Lock()
+	h.runs++
+	h.mu.Unlock()
 	return harness.Result{Response: "done", Transcript: []byte("{}\n"), TargetRead: strings.Contains(request.Prompt, "relevant"), Duration: time.Millisecond}, nil
 }
 
@@ -55,5 +62,39 @@ func TestRunChecksPositiveAndNegativeCases(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(report.Workspace, "trigger.json")); err != nil {
 		t.Fatalf("missing trigger summary: %v", err)
+	}
+}
+
+func TestRunCacheIncludesEffectiveSandboxOverride(t *testing.T) {
+	t.Setenv("SHUHARI_SANDBOX", "")
+
+	root := filepath.Join(t.TempDir(), "demo")
+	if err := os.MkdirAll(filepath.Join(root, "evals"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: demo\ndescription: Demo\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	contents := `{"skill_name":"demo","cases":[{"id":"yes","prompt":"relevant","should_trigger":true},{"id":"no","prompt":"near miss","should_trigger":false}]}`
+	if err := os.WriteFile(filepath.Join(root, "evals", "triggers.json"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	suite, err := LoadSuite(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &triggerHarness{}
+	store := cache.Store{Root: filepath.Join(t.TempDir(), "cache")}
+	config := Config{Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), Sandbox: "workspace-write"}
+	if _, err := Run(context.Background(), suite, agent, store, config); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHUHARI_SANDBOX", "danger-full-access")
+	report, err := Run(context.Background(), suite, agent, store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Cached || agent.runs != 4 {
+		t.Fatalf("sandbox override reused stale cache: cached=%v runs=%d", report.Cached, agent.runs)
 	}
 }

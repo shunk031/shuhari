@@ -16,16 +16,16 @@ type Suite struct {
 }
 
 type Config struct {
-	Trials          int
-	Jobs            int
-	Timeout         time.Duration
-	Model           string
-	ReasoningEffort string
-	Sandbox         string
-	Network         bool
-	Workspace       string
-	StrictAllTrials bool
-	NoCache         bool
+	Trials          int           `json:"trials"`
+	Jobs            int           `json:"jobs"`
+	Timeout         time.Duration `json:"timeout"`
+	Model           string        `json:"model,omitempty"`
+	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
+	Sandbox         string        `json:"sandbox"`
+	Network         bool          `json:"network"`
+	Workspace       string        `json:"-"`
+	StrictAllTrials bool          `json:"strict_all_trials"`
+	NoCache         bool          `json:"-"`
 }
 
 type Report struct {
@@ -33,4 +33,13 @@ type Report struct {
 	Cached    bool
 	Workspace string
 	Reasons   []string
+}
+
+type Measurement struct {
+	Results map[string][]bool `json:"target_read"`
+}
+
+type Policy struct {
+	Trials          int
+	StrictAllTrials bool
 }

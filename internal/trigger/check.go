@@ -79,6 +79,7 @@ func LoadSuite(skillPath, casesPath string) (Suite, error) {
 		return Suite{}, errors.New("trigger cases must not be empty")
 	}
 	seen := map[string]bool{}
+	seenPaths := map[string]string{}
 	positive, negative := false, false
 	cases := make([]Case, 0, len(raw.Cases))
 	for index, item := range raw.Cases {
@@ -90,6 +91,11 @@ func LoadSuite(skillPath, casesPath string) (Suite, error) {
 			return Suite{}, fmt.Errorf("duplicate trigger case id %q", id)
 		}
 		seen[id] = true
+		pathName := safeName(id)
+		if previous, exists := seenPaths[pathName]; exists {
+			return Suite{}, fmt.Errorf("trigger case ids %q and %q map to the same workspace path %q", previous, id, pathName)
+		}
+		seenPaths[pathName] = id
 		if strings.TrimSpace(item.Prompt) == "" || item.ShouldTrigger == nil {
 			return Suite{}, fmt.Errorf("cases[%d] requires prompt and should_trigger", index)
 		}
@@ -107,6 +113,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if config.Trials < 1 || config.Jobs < 1 || config.Timeout <= 0 {
 		return Report{}, errors.New("trials, jobs, and timeout must be positive")
 	}
+	config.Sandbox = harness.EffectiveSandbox(config.Sandbox)
 	if !agent.Capabilities().TriggerEvidence {
 		return Report{}, errors.New("selected agent does not expose trigger evidence")
 	}
@@ -140,6 +147,40 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if err != nil {
 		return Report{}, err
 	}
+	if err := writeTriggerManifest(iteration, suite, digest, runnerDigest, identity, config); err != nil {
+		return Report{Workspace: iteration}, err
+	}
+	measurement, runErr := measure(ctx, suite, agent, config, iteration)
+	if runErr != nil {
+		summary := struct {
+			SchemaVersion string            `json:"schema_version"`
+			Passed        bool              `json:"passed"`
+			Results       map[string][]bool `json:"target_read"`
+			Error         string            `json:"error"`
+		}{SchemaVersion: "1", Passed: false, Results: measurement.Results, Error: runErr.Error()}
+		_ = writeJSON(filepath.Join(iteration, "trigger.json"), summary)
+		return Report{Workspace: iteration}, runErr
+	}
+	reasons := ApplyPolicy(suite, measurement, Policy{Trials: config.Trials, StrictAllTrials: config.StrictAllTrials})
+	report := Report{Passed: len(reasons) == 0, Workspace: iteration, Reasons: reasons}
+	summary := struct {
+		SchemaVersion string            `json:"schema_version"`
+		Passed        bool              `json:"passed"`
+		Results       map[string][]bool `json:"target_read"`
+		Reasons       []string          `json:"reasons,omitempty"`
+	}{SchemaVersion: "1", Passed: report.Passed, Results: measurement.Results, Reasons: reasons}
+	if err := writeJSON(filepath.Join(iteration, "trigger.json"), summary); err != nil {
+		return report, err
+	}
+	if report.Passed && !config.NoCache {
+		if err := store.PutSuccess(key, cache.Record{Passed: true, CreatedAt: time.Now().UTC(), Workspace: iteration}); err != nil {
+			return report, err
+		}
+	}
+	return report, nil
+}
+
+func measure(ctx context.Context, suite Suite, agent harness.Harness, config Config, iteration string) (Measurement, error) {
 	type task struct {
 		Case  Case
 		Trial int
@@ -175,40 +216,42 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	}
 	group.Wait()
 	close(outcomes)
-	reads := map[string][]bool{}
+	readsByTrial := map[string]map[int]bool{}
 	var firstError error
 	for item := range outcomes {
 		if item.Err != nil && firstError == nil {
 			firstError = item.Err
 		}
 		if item.Err == nil {
-			reads[item.Case.ID] = append(reads[item.Case.ID], item.Read)
+			if readsByTrial[item.Case.ID] == nil {
+				readsByTrial[item.Case.ID] = map[int]bool{}
+			}
+			readsByTrial[item.Case.ID][item.Trial] = item.Read
+		}
+	}
+	reads := map[string][]bool{}
+	for _, item := range suite.Cases {
+		for trial := 1; trial <= config.Trials; trial++ {
+			if value, ok := readsByTrial[item.ID][trial]; ok {
+				reads[item.ID] = append(reads[item.ID], value)
+			}
 		}
 	}
 	if firstError != nil {
-		return Report{Workspace: iteration}, firstError
+		return Measurement{Results: reads}, firstError
 	}
+	return Measurement{Results: reads}, nil
+}
+
+func ApplyPolicy(suite Suite, measurement Measurement, policy Policy) []string {
 	var reasons []string
 	for _, item := range suite.Cases {
-		if !casePass(reads[item.ID], item.ShouldTrigger, config.StrictAllTrials) {
+		reads := measurement.Results[item.ID]
+		if len(reads) != policy.Trials || !casePass(reads, item.ShouldTrigger, policy.StrictAllTrials) {
 			reasons = append(reasons, fmt.Sprintf("%s: trigger outcomes did not satisfy policy", item.ID))
 		}
 	}
-	report := Report{Passed: len(reasons) == 0, Workspace: iteration, Reasons: reasons}
-	summary := struct {
-		Passed  bool              `json:"passed"`
-		Results map[string][]bool `json:"target_read"`
-		Reasons []string          `json:"reasons,omitempty"`
-	}{Passed: report.Passed, Results: reads, Reasons: reasons}
-	if err := writeJSON(filepath.Join(iteration, "trigger.json"), summary); err != nil {
-		return report, err
-	}
-	if report.Passed && !config.NoCache {
-		if err := store.PutSuccess(key, cache.Record{Passed: true, CreatedAt: time.Now().UTC(), Workspace: iteration}); err != nil {
-			return report, err
-		}
-	}
-	return report, nil
+	return reasons
 }
 
 func executeCase(ctx context.Context, suite Suite, agent harness.Harness, config Config, iteration string, item Case, trial int) (bool, error) {
@@ -332,6 +375,12 @@ func digestSuite(suite Suite) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		relative, err := filepath.Rel(suite.SkillPath, path)
+		if err != nil {
+			return "", err
+		}
+		_, _ = hash.Write([]byte(filepath.ToSlash(relative)))
+		_, _ = hash.Write([]byte{0})
 		_, _ = hash.Write(contents)
 		_, _ = hash.Write([]byte{0})
 	}
@@ -353,6 +402,19 @@ func digestSuite(suite Suite) (string, error) {
 		_, _ = hash.Write([]byte{0})
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func writeTriggerManifest(iteration string, suite Suite, suiteDigest, runnerDigest string, identity harness.Identity, config Config) error {
+	return writeJSON(filepath.Join(iteration, "manifest.json"), struct {
+		SchemaVersion string             `json:"schema_version"`
+		CreatedAt     time.Time          `json:"created_at"`
+		TargetKind    harness.TargetKind `json:"target_kind"`
+		TargetName    string             `json:"target_name"`
+		SuiteDigest   string             `json:"suite_digest"`
+		RunnerDigest  string             `json:"runner_digest"`
+		AgentIdentity harness.Identity   `json:"agent_identity"`
+		Config        Config             `json:"config"`
+	}{SchemaVersion: "1", CreatedAt: time.Now().UTC(), TargetKind: harness.TargetSkill, TargetName: suite.SkillName, SuiteDigest: suiteDigest, RunnerDigest: runnerDigest, AgentIdentity: identity, Config: config})
 }
 
 func pathWithin(path, root string) bool {
