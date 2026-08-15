@@ -22,6 +22,21 @@ jobs:
           cache: true
       - name: Test
         run: go test -race ./...
+      - name: Install Codex CLI for sandbox regression
+        run: npm install --global @openai/codex@0.146.0
+      - name: Test Codex credential boundary
+        env:
+          SHUHARI_REQUIRE_CODEX_SANDBOX_TEST: "1"
+        run: go test -race -tags=codex_sandbox -run '^TestCodexDefaultSandboxDeniesChildCredentialReads$' -v ./internal/harness
+      - name: Prove credential-deny mutation is detected
+        env:
+          SHUHARI_REQUIRE_CODEX_SANDBOX_TEST: "1"
+          SHUHARI_TEST_REMOVE_CREDENTIAL_DENIES: "1"
+        run: |
+          if go test -race -tags=codex_sandbox -run '^TestCodexDefaultSandboxDeniesChildCredentialReads$' -v ./internal/harness; then
+            echo "credential-deny mutation unexpectedly passed"
+            exit 1
+          fi
       - name: Vet
         run: go vet ./...
       - name: Lint workflows
