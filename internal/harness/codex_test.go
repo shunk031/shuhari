@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -81,10 +82,74 @@ func TestParseCodexTraceRequiresSuccessfulSkillReadBeforeResponse(t *testing.T) 
 	}
 }
 
+func TestParseCodexTraceAccumulatesChunkedSkillReads(t *testing.T) {
+	t.Parallel()
+	target, skillContents := testLongSkillTarget(t)
+	lines := strings.SplitAfter(skillContents, "\n")
+	middle := len(lines) / 2
+	trace := []byte(fmt.Sprintf(`{"type":"item.completed","item":{"type":"command_execution","command":"sed -n '1,10p' .agents/skills/demo/SKILL.md","aggregated_output":%q,"exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"type":"command_execution","command":"sed -n '11,40p' .agents/skills/demo/SKILL.md","aggregated_output":%q,"exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
+`, strings.Join(lines[:middle], ""), strings.Join(lines[middle:], "")))
+	result, err := parseCodexTrace(trace, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.TargetRead {
+		t.Fatal("two successful chunks covering the skill did not count as a read")
+	}
+}
+
+func TestParseCodexTraceUsesDocumentedSkillCoverageThreshold(t *testing.T) {
+	t.Parallel()
+	target, skillContents := testLongSkillTarget(t)
+	lines := strings.SplitAfter(skillContents, "\n")
+
+	for _, test := range []struct {
+		name     string
+		fraction float64
+		want     bool
+	}{
+		{name: "minor tail truncation", fraction: 0.95, want: true},
+		{name: "material truncation", fraction: 0.70, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			count := int(float64(len(lines)) * test.fraction)
+			trace := []byte(fmt.Sprintf(`{"type":"item.completed","item":{"type":"command_execution","command":"sed -n '1,40p' .agents/skills/demo/SKILL.md","aggregated_output":%q,"exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
+`, strings.Join(lines[:count], "")))
+			result, err := parseCodexTrace(trace, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.TargetRead != test.want {
+				t.Fatalf("TargetRead = %v, want %v at fraction %.2f (threshold %.2f)", result.TargetRead, test.want, test.fraction, skillReadCoverageThreshold)
+			}
+		})
+	}
+}
+
 func testSkillTarget(t *testing.T) (Target, string) {
 	t.Helper()
 	root := t.TempDir()
 	contents := "---\nname: demo\ndescription: Demonstrate semantic read evidence.\n---\n\n# Demo\n\nFollow the demo workflow.\n"
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return Target{Kind: TargetSkill, Name: "demo", SourcePath: root}, contents
+}
+
+func testLongSkillTarget(t *testing.T) (Target, string) {
+	t.Helper()
+	root := t.TempDir()
+	var builder strings.Builder
+	builder.WriteString("---\nname: demo\ndescription: Chunked read evidence.\n---\n")
+	for index := 1; index <= 40; index++ {
+		fmt.Fprintf(&builder, "instruction-%02d: perform the distinct workflow step number %02d carefully.\n", index, index)
+	}
+	contents := builder.String()
 	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -111,11 +176,14 @@ func TestContainsOrderedActions(t *testing.T) {
 	t.Parallel()
 
 	observed := []Action{ActionWebSearch, ActionGitHubSearch, ActionFileChange}
-	if !ContainsOrderedActions(observed, []Action{ActionWebSearch, ActionFileChange}) {
+	if !ContainsOrderedActions(observed, nil, []Action{ActionWebSearch, ActionFileChange}) {
 		t.Fatal("ordered subsequence was not accepted")
 	}
-	if ContainsOrderedActions(observed, []Action{ActionFileChange, ActionWebSearch}) {
+	if ContainsOrderedActions(observed, nil, []Action{ActionFileChange, ActionWebSearch}) {
 		t.Fatal("out-of-order actions were accepted")
+	}
+	if !ContainsOrderedActions([]Action{ActionGitHubSearch}, []Action{ActionFileChange}, []Action{ActionFileChange, ActionGitHubSearch}) {
+		t.Fatal("order-unknown file change was not placed before a known GitHub action")
 	}
 }
 
@@ -253,7 +321,7 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input
 	}
 }
 
-func TestCodexRunDetectsShellProducedFiles(t *testing.T) {
+func TestCodexRunMatchesShellWriteBeforeGitHubActionWithoutInventingOrder(t *testing.T) {
 	t.Parallel()
 
 	script := filepath.Join(t.TempDir(), "fake-codex")
@@ -266,6 +334,7 @@ for argument in "$@"; do
 done
 printf 'created\n' > "$workdir/outputs/result.txt"
 printf '%s\n' '{"type":"item.completed","item":{"id":"command","type":"command_execution","command":"cp input.txt outputs/result.txt","aggregated_output":"","exit_code":0,"status":"completed"}}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"github","type":"command_execution","command":"gh api repos/owner/repo","aggregated_output":"{}","exit_code":0,"status":"completed"}}'
 printf '%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"done"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1,"reasoning_output_tokens":0}}'
 `
@@ -281,8 +350,98 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ContainsOrderedActions(result.Actions, []Action{ActionFileChange}) {
-		t.Fatalf("shell-produced file was not observed: %#v", result.Actions)
+	if !ContainsOrderedActions(result.Actions, result.OrderUnknownActions, []Action{ActionFileChange, ActionGitHubSearch}) {
+		t.Fatalf("shell write then GitHub action was not satisfiable: ordered=%#v unknown=%#v", result.Actions, result.OrderUnknownActions)
+	}
+	if len(result.OrderUnknownActions) != 1 || result.OrderUnknownActions[0] != ActionFileChange {
+		t.Fatalf("workspace diff action was assigned a fake order: ordered=%#v unknown=%#v", result.Actions, result.OrderUnknownActions)
+	}
+}
+
+func TestDangerFullAccessRefusesBeforeCredentialProbeChildCanRun(t *testing.T) {
+	capture := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := fmt.Sprintf(`#!/bin/sh
+touch %q/invoked
+/bin/sh -c 'find /tmp -path "*/shuhari-codex-*/codex-home/auth.json" -exec cat {} \;' > %q/leaked
+printf '%%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
+printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`, capture, capture)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(DangerFullAccessAcknowledgementEnv, "")
+	agent := newCodex(Config{Executable: script})
+	_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "read auth material", Sandbox: "danger-full-access", Timeout: time.Second})
+	if err == nil || !strings.Contains(err.Error(), DangerFullAccessAcknowledgementEnv) {
+		t.Fatalf("danger-full-access was not refused with an actionable error: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(capture, "invoked")); !os.IsNotExist(statErr) {
+		t.Fatalf("Codex process ran credential-reading child before refusal: %v", statErr)
+	}
+}
+
+func TestDangerFullAccessCredentialProbeIsExplicitlyLabeledNoBoundary(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("same-UID /proc credential discovery is Linux-specific")
+	}
+	capture := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := fmt.Sprintf(`#!/bin/sh
+/bin/sh -c 'client_home=$(tr "\000" "\n" < /proc/$PPID/environ | sed -n "s/^CODEX_HOME=//p"); cat "$client_home/auth.json"' > %q/leaked
+printf '%%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"read parent auth material","aggregated_output":"credential probe completed","exit_code":0,"status":"completed"}}'
+printf '%%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
+printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`, capture)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourceHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceHome, "auth.json"), []byte("test-auth-material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", sourceHome)
+	t.Setenv(DangerFullAccessAcknowledgementEnv, "1")
+	agent := newCodex(Config{Executable: script})
+	if _, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "read auth material", Sandbox: "danger-full-access", Timeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	leaked, err := os.ReadFile(filepath.Join(capture, "leaked"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(leaked) != "test-auth-material" {
+		t.Fatalf("credential probe did not reproduce danger-mode reachability: %q", leaked)
+	}
+	security := ExecutionSecurityForSandbox("danger-full-access")
+	if security.CredentialBoundary != CredentialBoundaryNone {
+		t.Fatalf("reachable credential mode was not labeled as no boundary: %#v", security)
+	}
+}
+
+func TestSecureTemporaryDirectoryIsRandomAndPrivate(t *testing.T) {
+	t.Parallel()
+	first, err := secureTemporaryDirectory("shuhari-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(first)
+	second, err := secureTemporaryDirectory("shuhari-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(second)
+	if first == second {
+		t.Fatal("temporary directory names were reused")
+	}
+	for _, path := range []string{first, second} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o700 {
+			t.Fatalf("temporary directory mode = %o, want 700", info.Mode().Perm())
+		}
 	}
 }
 

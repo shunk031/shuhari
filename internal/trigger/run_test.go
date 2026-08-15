@@ -63,6 +63,19 @@ func TestRunChecksPositiveAndNegativeCases(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(report.Workspace, "trigger.json")); err != nil {
 		t.Fatalf("missing trigger summary: %v", err)
 	}
+	summaryContents, err := os.ReadFile(filepath.Join(report.Workspace, "trigger.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary struct {
+		Security harness.ExecutionSecurity `json:"security"`
+	}
+	if err := json.Unmarshal(summaryContents, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Security.CredentialBoundary != harness.CredentialBoundaryCodexSandbox {
+		t.Fatalf("trigger credential boundary = %q", summary.Security.CredentialBoundary)
+	}
 }
 
 func TestRunCacheIncludesEffectiveSandboxOverride(t *testing.T) {
@@ -90,11 +103,25 @@ func TestRunCacheIncludesEffectiveSandboxOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SHUHARI_SANDBOX", "danger-full-access")
+	t.Setenv(harness.DangerFullAccessAcknowledgementEnv, "1")
 	report, err := Run(context.Background(), suite, agent, store, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.Cached || agent.runs != 4 {
 		t.Fatalf("sandbox override reused stale cache: cached=%v runs=%d", report.Cached, agent.runs)
+	}
+	summaryContents, err := os.ReadFile(filepath.Join(report.Workspace, "trigger.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary struct {
+		Security harness.ExecutionSecurity `json:"security"`
+	}
+	if err := json.Unmarshal(summaryContents, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Security.CredentialBoundary != harness.CredentialBoundaryNone || summary.Security.SandboxMode != "danger-full-access" {
+		t.Fatalf("danger trigger security = %#v", summary.Security)
 	}
 }

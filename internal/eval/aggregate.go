@@ -3,6 +3,8 @@ package eval
 import (
 	"math"
 	"sort"
+
+	"github.com/shunk031/shuhari/internal/harness"
 )
 
 type Statistic struct {
@@ -31,9 +33,10 @@ type BenchmarkSummary struct {
 }
 
 type Benchmark struct {
-	SchemaVersion     string              `json:"schema_version"`
-	RunSummary        BenchmarkSummary    `json:"run_summary"`
-	AssertionAnalysis []AssertionAnalysis `json:"assertion_analysis"`
+	SchemaVersion     string                    `json:"schema_version"`
+	Security          harness.ExecutionSecurity `json:"security"`
+	RunSummary        BenchmarkSummary          `json:"run_summary"`
+	AssertionAnalysis []AssertionAnalysis       `json:"assertion_analysis"`
 }
 
 type AssertionAnalysis struct {

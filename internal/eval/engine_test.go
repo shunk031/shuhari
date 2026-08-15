@@ -133,6 +133,17 @@ func TestRunWritesAgentSkillsWorkspaceAndCachesSuccess(t *testing.T) {
 			t.Fatal("required_actions enabled network without --network")
 		}
 	}
+	var benchmark Benchmark
+	contents, err := os.ReadFile(filepath.Join(report.Workspace, "benchmark.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(contents, &benchmark); err != nil {
+		t.Fatal(err)
+	}
+	if benchmark.Security.CredentialBoundary != harness.CredentialBoundaryCodexSandbox {
+		t.Fatalf("benchmark credential boundary = %q", benchmark.Security.CredentialBoundary)
+	}
 }
 
 func TestRunRejectsHarnessWithoutTargetCapability(t *testing.T) {
@@ -169,12 +180,24 @@ func TestRunCacheIncludesEffectiveSandboxOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SHUHARI_SANDBOX", "danger-full-access")
+	t.Setenv(harness.DangerFullAccessAcknowledgementEnv, "1")
 	report, err := Run(context.Background(), suite, agent, store, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.Cached || agent.runs != 8 {
 		t.Fatalf("sandbox override reused stale cache: cached=%v runs=%d", report.Cached, agent.runs)
+	}
+	contents, err := os.ReadFile(filepath.Join(report.Workspace, "benchmark.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var benchmark Benchmark
+	if err := json.Unmarshal(contents, &benchmark); err != nil {
+		t.Fatal(err)
+	}
+	if benchmark.Security.CredentialBoundary != harness.CredentialBoundaryNone || benchmark.Security.SandboxMode != "danger-full-access" {
+		t.Fatalf("danger benchmark security = %#v", benchmark.Security)
 	}
 }
 

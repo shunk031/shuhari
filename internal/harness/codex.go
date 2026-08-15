@@ -119,10 +119,14 @@ func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error)
 	if request.Timeout <= 0 {
 		return Result{}, errors.New("codex timeout must be positive")
 	}
+	request.Sandbox = EffectiveSandbox(request.Sandbox)
+	if err := ValidateSandbox(request.Sandbox); err != nil {
+		return Result{}, err
+	}
 	if err := os.MkdirAll(request.WorkDir, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create work directory: %w", err)
 	}
-	snapshotRoot, err := os.MkdirTemp("", "shuhari-codex-snapshot-")
+	snapshotRoot, err := secureTemporaryDirectory("shuhari-codex-snapshot-")
 	if err != nil {
 		return Result{}, fmt.Errorf("create work directory snapshot: %w", err)
 	}
@@ -131,7 +135,6 @@ func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error)
 	if err := copyTree(request.WorkDir, snapshot); err != nil {
 		return Result{}, fmt.Errorf("snapshot work directory: %w", err)
 	}
-	request.Sandbox = EffectiveSandbox(request.Sandbox)
 	var last error
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := restoreDirectory(snapshot, request.WorkDir); err != nil {
@@ -163,7 +166,7 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 		}
 	}
 
-	temporary, err := os.MkdirTemp("", "shuhari-codex-")
+	temporary, err := secureTemporaryDirectory("shuhari-codex-")
 	if err != nil {
 		return Result{}, fmt.Errorf("create codex temporary directory: %w", err)
 	}
@@ -240,7 +243,7 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 	result.Transcript = append([]byte(nil), stdout.Bytes()...)
 	result.Duration = duration
 	if statesDiffer(before, after) && !containsAction(result.Actions, ActionFileChange) {
-		result.Actions = append(result.Actions, ActionFileChange)
+		result.OrderUnknownActions = append(result.OrderUnknownActions, ActionFileChange)
 	}
 	return result, nil
 }
@@ -262,7 +265,11 @@ func parseCodexTrace(trace []byte, target Target) (Result, error) {
 		Index  int
 		Action Action
 	}
-	var targetReadEvents []int
+	type skillReadObservation struct {
+		Index  int
+		Output string
+	}
+	var skillReadEvents []skillReadObservation
 	var actionEvents []actionObservation
 	lastMessageEvent := -1
 	turnCompleted := false
@@ -332,8 +339,8 @@ func parseCodexTrace(trace []byte, target Target) (Result, error) {
 				if event.Type != "item.completed" || item.Status != "completed" || (item.ExitCode != nil && *item.ExitCode != 0) {
 					continue
 				}
-				if target.Kind == TargetSkill && skillContents != "" && strings.Contains(item.Output, skillContents) {
-					targetReadEvents = append(targetReadEvents, eventIndex)
+				if target.Kind == TargetSkill && skillContents != "" && commandReferencesSkill(item.Command, target.Name) {
+					skillReadEvents = append(skillReadEvents, skillReadObservation{Index: eventIndex, Output: item.Output})
 				}
 				for _, action := range classifyCommand(item.Command) {
 					actionEvents = append(actionEvents, actionObservation{Index: eventIndex, Action: action})
@@ -348,12 +355,13 @@ func parseCodexTrace(trace []byte, target Target) (Result, error) {
 		return Result{}, errors.New("Codex trace ended without turn.completed")
 	}
 	if target.Kind == TargetSkill && lastMessageEvent >= 0 {
-		for _, index := range targetReadEvents {
-			if index < lastMessageEvent {
-				result.TargetRead = true
-				break
+		coverage := newSkillCoverage(skillContents)
+		for _, observation := range skillReadEvents {
+			if observation.Index < lastMessageEvent {
+				coverage.observe(observation.Output)
 			}
 		}
+		result.TargetRead = coverage.ratio() >= skillReadCoverageThreshold
 	}
 	for _, observation := range actionEvents {
 		if lastMessageEvent < 0 || observation.Index < lastMessageEvent {
@@ -361,6 +369,61 @@ func parseCodexTrace(trace []byte, target Target) (Result, error) {
 		}
 	}
 	return result, nil
+}
+
+const (
+	skillReadCoverageThreshold = 0.90
+	skillEvidenceChunkBytes    = 128
+)
+
+type skillCoverage struct {
+	chunks  []string
+	covered []bool
+	total   int
+	read    int
+}
+
+func newSkillCoverage(contents string) *skillCoverage {
+	coverage := &skillCoverage{}
+	for _, line := range strings.SplitAfter(contents, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		for len(line) > skillEvidenceChunkBytes {
+			coverage.chunks = append(coverage.chunks, line[:skillEvidenceChunkBytes])
+			coverage.total += skillEvidenceChunkBytes
+			line = line[skillEvidenceChunkBytes:]
+		}
+		if line != "" {
+			coverage.chunks = append(coverage.chunks, line)
+			coverage.total += len(line)
+		}
+	}
+	coverage.covered = make([]bool, len(coverage.chunks))
+	return coverage
+}
+
+func (coverage *skillCoverage) observe(output string) {
+	for index, chunk := range coverage.chunks {
+		if !coverage.covered[index] && strings.Contains(output, chunk) {
+			coverage.covered[index] = true
+			coverage.read += len(chunk)
+		}
+	}
+}
+
+func (coverage *skillCoverage) ratio() float64 {
+	if coverage.total == 0 {
+		return 0
+	}
+	return float64(coverage.read) / float64(coverage.total)
+}
+
+func commandReferencesSkill(command, skillName string) bool {
+	normalized := filepath.ToSlash(command)
+	directory := filepath.ToSlash(filepath.Join(".agents", "skills", skillName))
+	return strings.Contains(normalized, directory+"/SKILL.md") ||
+		(strings.Contains(normalized, directory) && strings.Contains(normalized, "SKILL.md"))
 }
 
 var (
@@ -504,6 +567,18 @@ func sourceCodexHome() (string, error) {
 		return "", fmt.Errorf("find home directory: %w", err)
 	}
 	return filepath.Join(home, ".codex"), nil
+}
+
+func secureTemporaryDirectory(pattern string) (string, error) {
+	directory, err := os.MkdirTemp("", pattern)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(directory, 0o700); err != nil {
+		_ = os.RemoveAll(directory)
+		return "", err
+	}
+	return directory, nil
 }
 
 func writeCodexProfile(codexHome string, request Request) error {

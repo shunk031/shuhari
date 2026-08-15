@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shunk031/shuhari/schemas/trigger.schema.json",
+  "title": "Shuhari trigger verdict artifact",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "security": {
+      "type": "object",
+      "properties": {
+        "sandbox_mode": { "enum": ["read-only", "workspace-write", "danger-full-access"] },
+        "credential_boundary": { "enum": ["codex-sandbox", "none"] }
+      },
+      "required": ["sandbox_mode", "credential_boundary"],
+      "additionalProperties": false
+    },
+    "passed": { "type": "boolean" },
+    "target_read": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "boolean" }
+      }
+    },
+    "reasons": { "type": "array", "items": { "type": "string" } },
+    "error": { "type": "string", "minLength": 1 }
+  },
+  "required": ["schema_version", "security", "passed", "target_read"],
+  "additionalProperties": false
+}

@@ -32,6 +32,9 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 		return Report{}, errors.New("trials, jobs, and timeout must be positive")
 	}
 	config.Sandbox = harness.EffectiveSandbox(config.Sandbox)
+	if err := harness.ValidateSandbox(config.Sandbox); err != nil {
+		return Report{}, err
+	}
 	capabilities := agent.Capabilities()
 	if suite.Kind == harness.TargetSkill && !capabilities.Skills {
 		return Report{}, errors.New("selected agent does not support skill evaluation")
@@ -101,6 +104,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 		return Report{Workspace: iteration}, err
 	}
 	benchmark := buildBenchmark(graded)
+	benchmark.Security = harness.ExecutionSecurityForSandbox(config.Sandbox)
 	if err := writeJSON(filepath.Join(iteration, "benchmark.json"), benchmark); err != nil {
 		return Report{Workspace: iteration}, err
 	}
@@ -117,7 +121,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 			passedByCase[item.ID] = append(passedByCase[item.ID], ok && grade.Passed)
 			for _, result := range results {
 				if result.Case.ID == item.ID && result.Trial == trial && result.Variant == withVariant {
-					actionsByCase[item.ID] = append(actionsByCase[item.ID], harness.ContainsOrderedActions(result.Agent.Actions, item.RequiredActions))
+					actionsByCase[item.ID] = append(actionsByCase[item.ID], harness.ContainsOrderedActions(result.Agent.Actions, result.Agent.OrderUnknownActions, item.RequiredActions))
 					break
 				}
 			}

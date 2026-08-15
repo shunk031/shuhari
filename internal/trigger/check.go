@@ -114,6 +114,10 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 		return Report{}, errors.New("trials, jobs, and timeout must be positive")
 	}
 	config.Sandbox = harness.EffectiveSandbox(config.Sandbox)
+	if err := harness.ValidateSandbox(config.Sandbox); err != nil {
+		return Report{}, err
+	}
+	security := harness.ExecutionSecurityForSandbox(config.Sandbox)
 	if !agent.Capabilities().TriggerEvidence {
 		return Report{}, errors.New("selected agent does not expose trigger evidence")
 	}
@@ -153,22 +157,24 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	measurement, runErr := measure(ctx, suite, agent, config, iteration)
 	if runErr != nil {
 		summary := struct {
-			SchemaVersion string            `json:"schema_version"`
-			Passed        bool              `json:"passed"`
-			Results       map[string][]bool `json:"target_read"`
-			Error         string            `json:"error"`
-		}{SchemaVersion: "1", Passed: false, Results: measurement.Results, Error: runErr.Error()}
+			SchemaVersion string                    `json:"schema_version"`
+			Security      harness.ExecutionSecurity `json:"security"`
+			Passed        bool                      `json:"passed"`
+			Results       map[string][]bool         `json:"target_read"`
+			Error         string                    `json:"error"`
+		}{SchemaVersion: "1", Security: security, Passed: false, Results: measurement.Results, Error: runErr.Error()}
 		_ = writeJSON(filepath.Join(iteration, "trigger.json"), summary)
 		return Report{Workspace: iteration}, runErr
 	}
 	reasons := ApplyPolicy(suite, measurement, Policy{Trials: config.Trials, StrictAllTrials: config.StrictAllTrials})
 	report := Report{Passed: len(reasons) == 0, Workspace: iteration, Reasons: reasons}
 	summary := struct {
-		SchemaVersion string            `json:"schema_version"`
-		Passed        bool              `json:"passed"`
-		Results       map[string][]bool `json:"target_read"`
-		Reasons       []string          `json:"reasons,omitempty"`
-	}{SchemaVersion: "1", Passed: report.Passed, Results: measurement.Results, Reasons: reasons}
+		SchemaVersion string                    `json:"schema_version"`
+		Security      harness.ExecutionSecurity `json:"security"`
+		Passed        bool                      `json:"passed"`
+		Results       map[string][]bool         `json:"target_read"`
+		Reasons       []string                  `json:"reasons,omitempty"`
+	}{SchemaVersion: "1", Security: security, Passed: report.Passed, Results: measurement.Results, Reasons: reasons}
 	if err := writeJSON(filepath.Join(iteration, "trigger.json"), summary); err != nil {
 		return report, err
 	}

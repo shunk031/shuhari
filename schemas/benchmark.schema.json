@@ -5,6 +5,15 @@
   "type": "object",
   "properties": {
     "schema_version": { "const": "1" },
+    "security": {
+      "type": "object",
+      "properties": {
+        "sandbox_mode": { "enum": ["read-only", "workspace-write", "danger-full-access"] },
+        "credential_boundary": { "enum": ["codex-sandbox", "none"] }
+      },
+      "required": ["sandbox_mode", "credential_boundary"],
+      "additionalProperties": false
+    },
     "run_summary": { "type": "object" },
     "assertion_analysis": {
       "type": "array",
@@ -22,6 +31,6 @@
       }
     }
   },
-  "required": ["schema_version", "run_summary", "assertion_analysis"],
+  "required": ["schema_version", "security", "run_summary", "assertion_analysis"],
   "additionalProperties": false
 }
