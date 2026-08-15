@@ -4,6 +4,8 @@
 
 ## Install
 
+The initial release runs evaluations through the [Codex CLI](https://developers.openai.com/codex/noninteractive/). Install `codex`, put it on your `PATH`, and sign in with `codex login` before running Shuhari. For each run, Shuhari copies the existing Codex login and settings into a private temporary directory for the Codex client, then deletes that directory. It does not install Codex, keep a persistent credential store, or manage the login itself.
+
 ### GitHub Releases
 
 Tagged releases publish prebuilt archives for Linux, macOS, and Windows on the [GitHub Releases page](https://github.com/shunk031/shuhari/releases). Download the archive for your operating system and architecture, extract `shuhari`, and place it on your `PATH`.
@@ -25,8 +27,6 @@ Install a GitHub release with the [mise GitHub backend](https://mise.jdx.dev/dev
 ```sh
 mise use -g github:shunk031/shuhari
 ```
-
-The initial release runs evaluations through the [Codex CLI](https://developers.openai.com/codex/noninteractive/). Install `codex`, put it on your `PATH`, and sign in with `codex login` before running Shuhari. Shuhari calls that local CLI and uses its existing login and settings; it does not install Codex or accept or store your login credentials.
 
 ## How to Use
 
@@ -189,12 +189,14 @@ shuhari eval skill path/to/skill --network
 On hosts where the Codex sandbox cannot start but the surrounding environment already provides isolation, override it explicitly:
 
 ```sh
-SHUHARI_SANDBOX=danger-full-access shuhari eval skill path/to/skill
+SHUHARI_SANDBOX=danger-full-access \
+SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY=1 \
+shuhari eval skill path/to/skill
 ```
 
-This override removes Codex's command filesystem and network boundary. Shuhari still removes credential paths from the generated command environment, but same-UID commands can search the host filesystem. Use the override only inside an external container or equivalent credential-free boundary. See the [credential boundary](docs/architecture.md#credential-boundary).
+This override removes Codex's command filesystem and network boundary. Shuhari refuses it without the explicit acknowledgement above, and labels its verdict artifacts with `credential_boundary: none`. Use it only when an isolated runner or container supplies the outer security boundary. See the [credential boundary](docs/architecture.md#credential-boundary).
 
-`required_actions` is an optional Shuhari extension for cases that must observe `web_search`, `github_search`, or `file_change` in order. It checks successful trace evidence and workspace effects, requires the ordered actions in every trial, and never enables network access implicitly.
+`required_actions` is an optional Shuhari extension for cases that must observe `web_search`, `github_search`, or `file_change` in order. It checks successful trace evidence and workspace effects in every trial and never enables network access implicitly. Workspace-diff file changes have unknown order; see [Action evidence](docs/architecture.md#action-evidence) before relying on their position relative to another action.
 
 Successful runs are cached by the target contents and filenames, effective policy, agent executable/configuration/environment identity, both judge prompts, and Shuhari binary. Failed runs are not cached; their iteration remains available with machine-readable error evidence and completed per-run artifacts. Use `--no-cache` for a fresh run.
 
