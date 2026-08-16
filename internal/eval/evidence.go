@@ -19,9 +19,10 @@ const (
 var groundingTokenPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)
 
 type evidenceGrounding struct {
-	Kind  string
-	Score float64
-	Span  string
+	Kind        string
+	Score       float64
+	Span        string
+	Observation string
 }
 
 type groundingToken struct {
@@ -36,7 +37,7 @@ func groundEvidence(evidence, artifact string) evidenceGrounding {
 	for _, observation := range observations {
 		quoted := normalizeEvidenceText(decodeQuotedObservation(observation))
 		if quoted != "" && strings.Contains(normalizedArtifact, quoted) {
-			return evidenceGrounding{Kind: evidenceGroundingStrong, Score: 1, Span: quoted}
+			return evidenceGrounding{Kind: evidenceGroundingStrong, Score: 1, Span: quoted, Observation: quoted}
 		}
 	}
 
@@ -44,6 +45,7 @@ func groundEvidence(evidence, artifact string) evidenceGrounding {
 	for _, observation := range observations {
 		quoted := normalizeEvidenceText(decodeQuotedObservation(observation))
 		candidate := groundParaphrase(quoted, normalizedArtifact)
+		candidate.Observation = quoted
 		if candidate.Score > best.Score {
 			best = candidate
 		}
@@ -173,6 +175,34 @@ func normalizeEvidenceText(value string) string {
 }
 
 func quotedObservations(evidence string) []string {
+	outer := outerQuotedObservations(evidence)
+	if len(outer) == 0 {
+		return nil
+	}
+	observations := make([]string, 0, len(outer)+2)
+	seen := map[string]struct{}{}
+	appendObservation := func(observation string) {
+		if _, exists := seen[observation]; exists {
+			return
+		}
+		seen[observation] = struct{}{}
+		observations = append(observations, observation)
+	}
+	for _, observation := range outer {
+		appendObservation(observation)
+	}
+	for _, scope := range append([]string{evidence}, outer...) {
+		for _, observation := range backtickObservations(scope) {
+			appendObservation(observation)
+		}
+		for _, observation := range escapedDoubleQuotedObservations(scope) {
+			appendObservation(observation)
+		}
+	}
+	return observations
+}
+
+func outerQuotedObservations(evidence string) []string {
 	runes := []rune(evidence)
 	observations := make([]string, 0, 1)
 	for index := 0; index < len(runes); index++ {
@@ -191,6 +221,48 @@ func quotedObservations(evidence string) []string {
 				continue
 			}
 			observations = append(observations, string(runes[index+1:end]))
+			index = end
+			break
+		}
+	}
+	return observations
+}
+
+func backtickObservations(value string) []string {
+	observations := []string{}
+	for index := 0; index < len(value); {
+		if value[index] != '`' {
+			index++
+			continue
+		}
+		delimiterStart := index
+		for index < len(value) && value[index] == '`' {
+			index++
+		}
+		delimiter := value[delimiterStart:index]
+		closingOffset := strings.Index(value[index:], delimiter)
+		if closingOffset < 0 {
+			continue
+		}
+		closingStart := index + closingOffset
+		observations = append(observations, value[index:closingStart])
+		index = closingStart + len(delimiter)
+	}
+	return observations
+}
+
+func escapedDoubleQuotedObservations(value string) []string {
+	runes := []rune(value)
+	observations := []string{}
+	for index := 0; index < len(runes); index++ {
+		if runes[index] != '"' || !escapedQuote(runes, index) {
+			continue
+		}
+		for end := index + 1; end < len(runes); end++ {
+			if runes[end] != '"' || !escapedQuote(runes, end) {
+				continue
+			}
+			observations = append(observations, string(runes[index+1:end-1]))
 			index = end
 			break
 		}

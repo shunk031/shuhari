@@ -188,6 +188,10 @@ func TestBuildGradingAcceptsGroundedParaphrase(t *testing.T) {
 	if result.EvidenceGroundingSpan != wantSpan {
 		t.Fatalf("evidence grounding span = %q, want %q", result.EvidenceGroundingSpan, wantSpan)
 	}
+	wantObservation := "Do not put a PAT in a dotfile or persistent environment variable."
+	if result.EvidenceGroundingObservation != wantObservation {
+		t.Fatalf("evidence grounding observation = %q, want %q", result.EvidenceGroundingObservation, wantObservation)
+	}
 }
 
 func TestBuildGradingRejectsFabricatedParaphrase(t *testing.T) {
@@ -205,6 +209,66 @@ func TestBuildGradingRejectsFabricatedParaphrase(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("buildGrading() accepted fabricated artifact evidence")
+	}
+}
+
+func TestGroundEvidenceExtractsNestedObservations(t *testing.T) {
+	t.Parallel()
+
+	artifact := `Authentication command:
+tool auth token --host example.test --user automation
+
+Environment usage:
+CREDENTIAL="$(tool auth token --host example.test --user automation)" tool api current-user
+CREDENTIAL=value tool push
+CREDENTIAL=value tool review create`
+	tests := []struct {
+		name            string
+		evidence        string
+		want            string
+		wantObservation string
+	}{
+		{
+			name:            "backtick command inside explanatory evidence",
+			evidence:        `"The final documentation carefully explains that the procedure retrieves the credential with ` + "`tool auth token --host example.test --user automation`" + ` and then safely prefixes every relevant command with ` + "`CREDENTIAL=\\\"$(tool auth token ...)\\\"`" + ` without printing or persisting the value."`,
+			want:            evidenceGroundingStrong,
+			wantObservation: "tool auth token --host example.test --user automation",
+		},
+		{
+			name:            "escaped quotes inside explanatory evidence",
+			evidence:        `"The script uses \"tool auth token --host example.test --user automation\" and prefixes commands such as \"tool api current-user\", \"tool push\", and \"tool review create\" with CREDENTIAL."`,
+			want:            evidenceGroundingStrong,
+			wantObservation: "tool auth token --host example.test --user automation",
+		},
+		{
+			name:     "fabricated inner command",
+			evidence: `"The procedure runs ` + "`tool auth rotate --all --notify security`" + ` before continuing."`,
+			want:     evidenceGroundingHallucination,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			grounding := groundEvidence(test.evidence, artifact)
+			if grounding.Kind != test.want {
+				t.Fatalf("groundEvidence() kind = %q, want %q (score %.4f, span %q)", grounding.Kind, test.want, grounding.Score, grounding.Span)
+			}
+			if test.wantObservation != "" && grounding.Observation != test.wantObservation {
+				t.Fatalf("groundEvidence() observation = %q, want %q", grounding.Observation, test.wantObservation)
+			}
+			if test.want == evidenceGroundingStrong {
+				grading, err := buildGrading(
+					[]string{"credential handling is grounded"},
+					[]AssertionResult{{Text: "credential handling is grounded", Passed: true, Evidence: test.evidence}},
+					artifact,
+				)
+				if err != nil {
+					t.Fatalf("buildGrading() error = %v", err)
+				}
+				if got := grading.AssertionResults[0].EvidenceGroundingObservation; got != test.wantObservation {
+					t.Fatalf("grading observation = %q, want %q", got, test.wantObservation)
+				}
+			}
+		})
 	}
 }
 

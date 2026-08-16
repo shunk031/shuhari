@@ -392,10 +392,12 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 			result.EvidenceGrounding = grounding.Kind
 			result.EvidenceGroundingScore = grounding.Score
 			result.EvidenceGroundingSpan = grounding.Span
+			result.EvidenceGroundingObservation = grounding.Observation
 		} else {
 			result.EvidenceGrounding = evidenceGroundingNotApplicable
 			result.EvidenceGroundingScore = 0
 			result.EvidenceGroundingSpan = ""
+			result.EvidenceGroundingObservation = ""
 		}
 		ordered = append(ordered, result)
 		if result.Passed {

@@ -130,6 +130,9 @@ func TestRunWritesAgentSkillsWorkspaceAndCachesSuccess(t *testing.T) {
 			if result.EvidenceGrounding == "" {
 				t.Fatalf("%s grading artifact omits evidence_grounding: %s", variant, contents)
 			}
+			if result.Passed && result.EvidenceGroundingObservation == "" {
+				t.Fatalf("%s grading artifact omits evidence_grounding_observation: %s", variant, contents)
+			}
 		}
 	}
 
