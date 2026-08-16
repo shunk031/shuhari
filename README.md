@@ -12,7 +12,7 @@
 - [ ] Gemini CLI
 - [ ] Antigravity
 
-Adapters are narrow; eval schemas and workspace artifacts stay the same across agents. See the [development architecture contract](docs/architecture.md).
+Adapters are narrow; eval schemas and workspace artifacts stay the same across agents. See the [development architecture contract](docs/architecture.md) and the [evaluation framework comparison](docs/comparison.md).
 
 ## Install
 
