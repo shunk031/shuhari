@@ -41,10 +41,10 @@ mise use -g github:shunk031/shuhari
 
 Shuhari groups output evaluation and trigger checks as sibling commands:
 
-- `shuhari eval` compares results with and without guidance.
+- `shuhari eval` compares results with and without guidance, following the [Agent Skills evaluation workflow](https://agentskills.io/skill-creation/evaluating-skills).
   - `shuhari eval skill <skill-path-or-file>...`
   - `shuhari eval instructions <instructions-file>`
-- `shuhari check` measures gate-oriented behavior.
+- `shuhari check` measures gate-oriented behavior for [pre-commit](https://github.com/pre-commit/pre-commit) hooks and CI jobs.
   - `shuhari check trigger <skill-path>`
 
 ### Evaluate a skill
