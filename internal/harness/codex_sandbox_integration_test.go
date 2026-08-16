@@ -103,6 +103,75 @@ printf '\nprobe-completed\n'
 	}
 }
 
+func TestCodexCommandEnvironmentStripsGitHubCredentials(t *testing.T) {
+	codex, err := exec.LookPath("codex")
+	if err != nil {
+		codexSandboxUnavailable(t, "Codex CLI is not installed")
+	}
+
+	for _, sandbox := range []string{"workspace-write", "read-only", "danger-full-access"} {
+		t.Run(sandbox, func(t *testing.T) {
+			root, err := os.MkdirTemp("/tmp", "shuhari-env-test-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(root)
+
+			workDir := filepath.Join(root, "work")
+			codexHome := filepath.Join(root, "codex-home")
+			if err := os.MkdirAll(codexHome, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeCodexProfile(codexHome, Request{WorkDir: workDir, Sandbox: sandbox, Network: true}); err != nil {
+				t.Fatal(err)
+			}
+
+			// Exercise the explicit credential filter independently from the
+			// primary inherit-none policy, so a future inheritance change stays safe.
+			profilePath := filepath.Join(codexHome, "shuhari.config.toml")
+			profile, err := os.ReadFile(profilePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile = []byte(strings.Replace(string(profile), `inherit = "none"`, `inherit = "all"`, 1))
+			if err := os.WriteFile(profilePath, profile, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			arguments := []string{"sandbox", "--profile", "shuhari", "--cd", workDir}
+			if sandbox == "danger-full-access" {
+				arguments = append(arguments, "--permission-profile", ":danger-full-access")
+			} else {
+				arguments = append(arguments, "--permission-profile", "shuhari-eval")
+			}
+			arguments = append(arguments, "/bin/sh", "-c", `env | grep -E '^(GH|GITHUB)_' || true`)
+			command := exec.Command(codex, arguments...)
+			command.Env = append(cleanEnvironment(codexHome),
+				"GH_TOKEN=synthetic-gh-token",
+				"GITHUB_TOKEN=synthetic-github-token",
+				"GH_ENTERPRISE_TOKEN=synthetic-gh-enterprise-token",
+				"GITHUB_ENTERPRISE_TOKEN=synthetic-github-enterprise-token",
+				"GH_AUTH=synthetic-gh-auth",
+				"GITHUB_CREDENTIAL=synthetic-github-credential",
+			)
+			output, err := command.Output()
+			if err != nil {
+				failureOutput := output
+				if exitError, ok := err.(*exec.ExitError); ok {
+					failureOutput = append(failureOutput, exitError.Stderr...)
+				}
+				if codexSandboxCapabilityError(failureOutput) {
+					codexSandboxUnavailable(t, strings.TrimSpace(string(failureOutput)))
+				}
+				t.Fatalf("run Codex command environment probe: %v\n%s", err, failureOutput)
+			}
+			if strings.TrimSpace(string(output)) != "" {
+				t.Fatalf("evaluated command received GitHub credential variables in %s mode:\n%s", sandbox, output)
+			}
+		})
+	}
+}
+
 func removeCredentialDenies(t *testing.T, codexHome, sourceHome string) {
 	t.Helper()
 	path := filepath.Join(codexHome, "shuhari.config.toml")
