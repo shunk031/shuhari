@@ -67,7 +67,7 @@ The Codex client needs authentication while model-generated commands must not re
 
 For `workspace-write` and `read-only`, Shuhari selects a custom permission profile. It grants commands only the minimal runtime paths and the evaluation workspace, and explicitly denies both the source and temporary Codex home. This is the supported credential-isolation boundary.
 
-`danger-full-access` disables Codex filesystem and network sandboxing. A same-UID command can search host paths even though direct variables such as `HOME` and `CODEX_HOME` are removed from its environment. Shuhari cannot provide a credential boundary in that mode, so it refuses to start unless `SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY=1`. Accepted runs record `sandbox_mode: danger-full-access` and `credential_boundary: none` in `benchmark.json` or `trigger.json`. Use this mode only inside an isolated runner or container that provides the outer boundary; `--network=false` is not an egress guarantee.
+`danger-full-access` disables Codex filesystem and network sandboxing. Shuhari strips `GH_*` and `GITHUB_*` variables from generated commands, but a same-UID command can still read credential files on disk. Shuhari cannot provide a credential boundary in that mode, so it refuses to start unless `SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY=1`. Accepted runs record `sandbox_mode: danger-full-access` and `credential_boundary: none` in `benchmark.json` or `trigger.json`. Use this mode only inside an isolated runner or container that provides the outer boundary; `--network=false` is not an egress guarantee.
 
 ## Action evidence
 
