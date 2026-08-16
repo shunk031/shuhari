@@ -15,10 +15,12 @@ import (
 
 type recordingJudgeHarness struct {
 	fakeHarness
-	omitGraderKey     string
-	omitComparatorKey string
-	rejectOverBytes   int
-	preferredVariants map[string]string
+	omitGraderKey      string
+	omitComparatorKey  string
+	invalidGraders     int
+	invalidComparators int
+	rejectOverBytes    int
+	preferredVariants  map[string]string
 }
 
 func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
@@ -34,6 +36,15 @@ func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) 
 		var inputs []comparatorInput
 		if err := json.Unmarshal([]byte(payload), &inputs); err != nil {
 			return harness.Result{}, err
+		}
+		h.mu.Lock()
+		invalid := h.invalidComparators > 0
+		if invalid {
+			h.invalidComparators--
+		}
+		h.mu.Unlock()
+		if invalid {
+			return harness.Result{Response: `{"cases":[]}`}, nil
 		}
 		output := comparatorOutput{}
 		for _, input := range inputs {
@@ -54,6 +65,12 @@ func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) 
 	if err := json.Unmarshal([]byte(payload), &inputs); err != nil {
 		return harness.Result{}, err
 	}
+	h.mu.Lock()
+	invalid := h.invalidGraders > 0
+	if invalid {
+		h.invalidGraders--
+	}
+	h.mu.Unlock()
 	output := judgeOutput{}
 	for _, input := range inputs {
 		if caseTrialKey(input.ID, input.Trial) == h.omitGraderKey {
@@ -61,6 +78,9 @@ func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) 
 		}
 		results := func(artifact string) []AssertionResult {
 			observation := strings.SplitN(artifact, "\n", 2)[0]
+			if invalid {
+				observation = "fabricated-answer-marker"
+			}
 			results := make([]AssertionResult, 0, len(input.Assertions))
 			for _, assertion := range input.Assertions {
 				results = append(results, AssertionResult{Text: assertion, Passed: true, Evidence: fmt.Sprintf(`Observed %q.`, observation)})
@@ -136,6 +156,51 @@ func TestBuildGradingRejectsBlankOrUnsupportedEvidence(t *testing.T) {
 	}
 	if evidenceQuotesArtifact("Observed `actual output`.", "actual output") {
 		t.Fatal("backticks were accepted as quotation marks")
+	}
+}
+
+func TestEvidenceQuotesArtifactNormalizesLineWrapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		artifact string
+		evidence string
+		want     bool
+	}{
+		{
+			name: "escaped line continuations",
+			artifact: `tool -c user=automation \
+    -c email=automation@example.test \
+    commit`,
+			evidence: `Observed "tool -c user=automation \\\n  -c email=automation@example.test \\\n  commit".`,
+			want:     true,
+		},
+		{
+			name:     "ordinary line wrapping",
+			artifact: "The client stores the credential in the system\ncredential store when available.",
+			evidence: `Observed "The client stores the credential in the system credential store when available."`,
+			want:     true,
+		},
+		{
+			name:     "paraphrase",
+			artifact: "The client stores the credential in the system\ncredential store when available.",
+			evidence: `Observed "The client saves credentials securely in the system credential store."`,
+			want:     false,
+		},
+		{
+			name:     "extra backslash",
+			artifact: `path\name`,
+			evidence: `Observed "path\\name"`,
+			want:     false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := evidenceQuotesArtifact(test.evidence, test.artifact); got != test.want {
+				t.Fatalf("evidenceQuotesArtifact() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 
@@ -357,6 +422,93 @@ func TestGradeRunsReportsOversizedTrialPrompt(t *testing.T) {
 			t.Fatalf("oversized error %q lacks %q", err, want)
 		}
 	}
+}
+
+func TestGradeRunsRetriesInvalidJudgeResponseOnce(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		agent *recordingJudgeHarness
+	}{
+		{name: "grader", agent: &recordingJudgeHarness{invalidGraders: 1}},
+		{name: "comparator", agent: &recordingJudgeHarness{invalidComparators: 1}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			suite, results := oneTrialJudgeSuite(t)
+			graded, _, _, _, _, err := gradeRuns(context.Background(), test.agent, suite, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir())
+			if err != nil {
+				t.Fatalf("gradeRuns() error = %v", err)
+			}
+			if len(graded) != len(results) {
+				t.Fatalf("graded runs = %d, want %d", len(graded), len(results))
+			}
+			if len(test.agent.requests) != 3 {
+				t.Fatalf("judge calls = %d, want 3", len(test.agent.requests))
+			}
+		})
+	}
+}
+
+func TestGradeRunsAbortsAfterSecondInvalidJudgeResponse(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		agent *recordingJudgeHarness
+		stage string
+	}{
+		{name: "grader", agent: &recordingJudgeHarness{invalidGraders: 2}, stage: "grader"},
+		{name: "comparator", agent: &recordingJudgeHarness{invalidComparators: 2}, stage: "comparator"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			suite, results := oneTrialJudgeSuite(t)
+			_, _, _, _, _, err := gradeRuns(context.Background(), test.agent, suite, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), test.stage) {
+				t.Fatalf("gradeRuns() error = %v, want %s validation error", err, test.stage)
+			}
+			wantCalls := 2
+			if test.stage == "comparator" {
+				wantCalls = 3
+			}
+			if len(test.agent.requests) != wantCalls {
+				t.Fatalf("judge calls = %d, want %d", len(test.agent.requests), wantCalls)
+			}
+		})
+	}
+}
+
+func TestJudgeValidationRetryPromptContainsOnlyContractError(t *testing.T) {
+	t.Parallel()
+
+	suite, results := oneTrialJudgeSuite(t)
+	agent := &recordingJudgeHarness{invalidGraders: 1}
+	if _, _, _, _, _, err := gradeRuns(context.Background(), agent, suite, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir()); err != nil {
+		t.Fatalf("gradeRuns() error = %v", err)
+	}
+	retryPrompt := agent.requests[1].Prompt
+	if !strings.Contains(strings.ToLower(retryPrompt), "validation error") || !strings.Contains(retryPrompt, "lacks a quoted observation") {
+		t.Fatalf("retry prompt lacks contract error: %s", retryPrompt)
+	}
+	for _, forbidden := range []string{"fabricated-answer-marker", `"passed":true`, `"preferred":"A"`} {
+		if strings.Contains(retryPrompt, forbidden) {
+			t.Fatalf("retry prompt contains assertion answer %q", forbidden)
+		}
+	}
+}
+
+func oneTrialJudgeSuite(t *testing.T) (Suite, []runResult) {
+	t.Helper()
+	item := Case{ID: "one", Assertions: []string{"correct"}}
+	results := make([]runResult, 0, 2)
+	for _, variant := range []string{variantWithSkill, variantWithoutSkill} {
+		runDir := filepath.Join(t.TempDir(), variant)
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		results = append(results, runResult{Case: item, Trial: 1, Variant: variant, RunDir: runDir, Artifact: variant})
+	}
+	return Suite{Kind: harness.TargetSkill, Cases: []Case{item}}, results
 }
 
 func judgeSuite(t *testing.T, trials int) (Suite, []runResult) {
