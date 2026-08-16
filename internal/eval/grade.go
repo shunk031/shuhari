@@ -384,8 +384,18 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 		if !ok {
 			return Grading{}, fmt.Errorf("%w: missing assertion %q", errInvalidGrading, assertion)
 		}
-		if result.Passed && !evidenceQuotesArtifact(result.Evidence, artifact) {
-			return Grading{}, fmt.Errorf("%w: passing assertion %q lacks a quoted observation from the artifact", errInvalidGrading, assertion)
+		if result.Passed {
+			grounding := groundEvidence(result.Evidence, artifact)
+			if grounding.Kind == evidenceGroundingHallucination {
+				return Grading{}, fmt.Errorf("%w: passing assertion %q lacks grounded evidence in the artifact", errInvalidGrading, assertion)
+			}
+			result.EvidenceGrounding = grounding.Kind
+			result.EvidenceGroundingScore = grounding.Score
+			result.EvidenceGroundingSpan = grounding.Span
+		} else {
+			result.EvidenceGrounding = evidenceGroundingNotApplicable
+			result.EvidenceGroundingScore = 0
+			result.EvidenceGroundingSpan = ""
 		}
 		ordered = append(ordered, result)
 		if result.Passed {
@@ -398,87 +408,6 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 		summary.PassRate = float64(summary.Passed) / float64(summary.Total)
 	}
 	return Grading{AssertionResults: ordered, Summary: summary}, nil
-}
-
-func evidenceQuotesArtifact(evidence, artifact string) bool {
-	normalizedArtifact := normalizeEvidenceText(artifact)
-	for _, observation := range quotedObservations(evidence) {
-		quoted := normalizeEvidenceText(decodeQuotedObservation(observation))
-		if quoted != "" && strings.Contains(normalizedArtifact, quoted) {
-			return true
-		}
-	}
-	return false
-}
-
-func decodeQuotedObservation(value string) string {
-	var decoded strings.Builder
-	for index := 0; index < len(value); index++ {
-		if value[index] != '\\' || index+1 == len(value) {
-			decoded.WriteByte(value[index])
-			continue
-		}
-		if strings.HasPrefix(value[index:], `\\\n`) {
-			decoded.WriteByte('\\')
-			decoded.WriteByte('\n')
-			index += 3
-			continue
-		}
-		switch value[index+1] {
-		case 'n':
-			decoded.WriteByte('\n')
-		case 't':
-			decoded.WriteByte('\t')
-		case '"':
-			decoded.WriteByte('"')
-		default:
-			decoded.WriteByte(value[index])
-			continue
-		}
-		index++
-	}
-	return decoded.String()
-}
-
-func normalizeEvidenceText(value string) string {
-	value = strings.ReplaceAll(value, "\r\n", "\n")
-	value = strings.ReplaceAll(value, "\\\n", " ")
-	value = strings.ReplaceAll(value, "`", "")
-	return strings.Join(strings.Fields(value), " ")
-}
-
-func quotedObservations(evidence string) []string {
-	runes := []rune(evidence)
-	observations := make([]string, 0, 1)
-	for index := 0; index < len(runes); index++ {
-		opening := runes[index]
-		closing := rune(0)
-		switch opening {
-		case '"':
-			closing = '"'
-		case '“':
-			closing = '”'
-		default:
-			continue
-		}
-		for end := index + 1; end < len(runes); end++ {
-			if runes[end] != closing || (closing == '"' && escapedQuote(runes, end)) {
-				continue
-			}
-			observations = append(observations, string(runes[index+1:end]))
-			index = end
-			break
-		}
-	}
-	return observations
-}
-
-func escapedQuote(value []rune, index int) bool {
-	backslashes := 0
-	for index--; index >= 0 && value[index] == '\\'; index-- {
-		backslashes++
-	}
-	return backslashes%2 == 1
 }
 
 func blindLabels(id string, trial int, with, without string) blindMapping {

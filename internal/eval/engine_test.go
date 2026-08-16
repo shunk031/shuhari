@@ -117,6 +117,21 @@ func TestRunWritesAgentSkillsWorkspaceAndCachesSuccess(t *testing.T) {
 			t.Errorf("missing artifact %s: %v", path, err)
 		}
 	}
+	for _, variant := range []string{"with_skill", "without_skill"} {
+		contents, err := os.ReadFile(filepath.Join(report.Workspace, "eval-1", variant, "grading.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var grading Grading
+		if err := json.Unmarshal(contents, &grading); err != nil {
+			t.Fatal(err)
+		}
+		for _, result := range grading.AssertionResults {
+			if result.EvidenceGrounding == "" {
+				t.Fatalf("%s grading artifact omits evidence_grounding: %s", variant, contents)
+			}
+		}
+	}
 
 	cached, err := Run(context.Background(), suite, agent, store, config)
 	if err != nil {
