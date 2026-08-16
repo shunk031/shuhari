@@ -121,7 +121,7 @@ Put positive cases and near-miss negative controls in `evals/triggers.json`:
 shuhari check trigger path/to/csv-analyzer --trials 3 --jobs 2 --timeout 600
 ```
 
-Positive cases pass by per-case trial majority; a negative control fails on a single read.
+By default, positive and negative cases use per-case majority to tolerate one nondeterministic outcome in three trials. Pass `--strict-all-trials` when every trial must match `should_trigger`.
 
 ### Add a repository gate
 

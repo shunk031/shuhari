@@ -35,7 +35,7 @@ func newCheckTriggerCommand(options Options) *cobra.Command {
 	flags := triggerFlags{}
 	command := &cobra.Command{
 		Use:   "trigger <skill-path>",
-		Short: "Check positive triggers and strict negative controls",
+		Short: "Check positive and negative trigger cases",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			suite, err := trigger.LoadSuite(args[0], flags.casesPath)
@@ -72,7 +72,7 @@ func newCheckTriggerCommand(options Options) *cobra.Command {
 	command.Flags().IntVar(&flags.trials, "trials", 1, "trials per trigger case")
 	command.Flags().IntVar(&flags.jobs, "jobs", 2, "maximum concurrent trigger runs")
 	command.Flags().IntVar(&flags.timeoutSeconds, "timeout", 180, "timeout per agent invocation in seconds")
-	command.Flags().BoolVar(&flags.strict, "strict-all-trials", false, "require every positive trial to trigger")
+	command.Flags().BoolVar(&flags.strict, "strict-all-trials", false, "require every trial to match should_trigger")
 	command.Flags().BoolVar(&flags.noCache, "no-cache", false, "ignore and do not write the success cache")
 	command.Flags().BoolVar(&flags.validateOnly, "validate-only", false, "validate inputs without running an agent")
 	return command

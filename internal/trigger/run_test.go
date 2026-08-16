@@ -68,13 +68,18 @@ func TestRunChecksPositiveAndNegativeCases(t *testing.T) {
 		t.Fatal(err)
 	}
 	var summary struct {
-		Security harness.ExecutionSecurity `json:"security"`
+		SchemaVersion string                    `json:"schema_version"`
+		DecisionRule  string                    `json:"decision_rule"`
+		Security      harness.ExecutionSecurity `json:"security"`
 	}
 	if err := json.Unmarshal(summaryContents, &summary); err != nil {
 		t.Fatal(err)
 	}
 	if summary.Security.CredentialBoundary != harness.CredentialBoundaryCodexSandbox {
 		t.Fatalf("trigger credential boundary = %q", summary.Security.CredentialBoundary)
+	}
+	if summary.SchemaVersion != "2" || summary.DecisionRule != "majority" {
+		t.Fatalf("trigger policy provenance = version %q rule %q, want version 2 majority", summary.SchemaVersion, summary.DecisionRule)
 	}
 }
 
