@@ -29,6 +29,18 @@ type rawCase struct {
 	ShouldTrigger *bool           `json:"should_trigger"`
 }
 
+const triggerSchemaVersion = "2"
+
+type triggerVerdict struct {
+	SchemaVersion string                    `json:"schema_version"`
+	Security      harness.ExecutionSecurity `json:"security"`
+	DecisionRule  string                    `json:"decision_rule"`
+	Passed        bool                      `json:"passed"`
+	Results       map[string][]bool         `json:"target_read"`
+	Reasons       []string                  `json:"reasons,omitempty"`
+	Error         string                    `json:"error,omitempty"`
+}
+
 func LoadSuite(skillPath, casesPath string) (Suite, error) {
 	absolute, err := filepath.Abs(skillPath)
 	if err != nil {
@@ -156,25 +168,13 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	}
 	measurement, runErr := measure(ctx, suite, agent, config, iteration)
 	if runErr != nil {
-		summary := struct {
-			SchemaVersion string                    `json:"schema_version"`
-			Security      harness.ExecutionSecurity `json:"security"`
-			Passed        bool                      `json:"passed"`
-			Results       map[string][]bool         `json:"target_read"`
-			Error         string                    `json:"error"`
-		}{SchemaVersion: "1", Security: security, Passed: false, Results: measurement.Results, Error: runErr.Error()}
+		summary := triggerVerdict{SchemaVersion: triggerSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: false, Results: measurement.Results, Error: runErr.Error()}
 		_ = writeJSON(filepath.Join(iteration, "trigger.json"), summary)
 		return Report{Workspace: iteration}, runErr
 	}
 	reasons := ApplyPolicy(suite, measurement, Policy{Trials: config.Trials, StrictAllTrials: config.StrictAllTrials})
 	report := Report{Passed: len(reasons) == 0, Workspace: iteration, Reasons: reasons}
-	summary := struct {
-		SchemaVersion string                    `json:"schema_version"`
-		Security      harness.ExecutionSecurity `json:"security"`
-		Passed        bool                      `json:"passed"`
-		Results       map[string][]bool         `json:"target_read"`
-		Reasons       []string                  `json:"reasons,omitempty"`
-	}{SchemaVersion: "1", Security: security, Passed: report.Passed, Results: measurement.Results, Reasons: reasons}
+	summary := triggerVerdict{SchemaVersion: triggerSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: report.Passed, Results: measurement.Results, Reasons: reasons}
 	if err := writeJSON(filepath.Join(iteration, "trigger.json"), summary); err != nil {
 		return report, err
 	}
@@ -291,21 +291,24 @@ func casePass(reads []bool, shouldTrigger, strict bool) bool {
 	if len(reads) == 0 {
 		return false
 	}
-	if !shouldTrigger || strict {
-		for _, read := range reads {
-			if read != shouldTrigger {
-				return false
-			}
-		}
-		return true
+	required := len(reads)/2 + 1
+	if strict {
+		required = len(reads)
 	}
-	count := 0
+	matches := 0
 	for _, read := range reads {
-		if read {
-			count++
+		if read == shouldTrigger {
+			matches++
 		}
 	}
-	return count >= len(reads)/2+1
+	return matches >= required
+}
+
+func decisionRule(strict bool) string {
+	if strict {
+		return "strict"
+	}
+	return "majority"
 }
 
 func decodeID(raw json.RawMessage) (string, error) {
