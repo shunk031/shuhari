@@ -139,7 +139,7 @@ func TestBuildGradingRejectsBlankOrUnsupportedEvidence(t *testing.T) {
 	}
 }
 
-func TestBuildGradingValidatesPreservedProductionEvidence(t *testing.T) {
+func TestBuildGradingValidatesSyntheticBacktickEvidence(t *testing.T) {
 	t.Parallel()
 
 	fixtureBytes, err := os.ReadFile(filepath.Join("testdata", "grader-evidence-backticks.json"))
@@ -165,10 +165,10 @@ func TestBuildGradingValidatesPreservedProductionEvidence(t *testing.T) {
 				fixture.Artifact,
 			)
 			if fixture.Valid && err != nil {
-				t.Fatalf("buildGrading() rejected preserved production evidence: %v", err)
+				t.Fatalf("buildGrading() rejected valid synthetic evidence: %v", err)
 			}
 			if !fixture.Valid && err == nil {
-				t.Fatal("buildGrading() accepted preserved evidence with no verbatim artifact observation")
+				t.Fatal("buildGrading() accepted synthetic evidence with no verbatim artifact observation")
 			}
 			if fixture.Valid && grading.Summary.Passed != 1 {
 				t.Fatalf("passed assertions = %d, want 1", grading.Summary.Passed)
