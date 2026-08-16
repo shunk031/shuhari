@@ -13,7 +13,7 @@ import (
 	"github.com/shunk031/shuhari/internal/harness"
 )
 
-type perCaseJudgeHarness struct {
+type recordingJudgeHarness struct {
 	fakeHarness
 	omitGraderKey     string
 	omitComparatorKey string
@@ -21,7 +21,7 @@ type perCaseJudgeHarness struct {
 	preferredVariants map[string]string
 }
 
-func (h *perCaseJudgeHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
+func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
 	h.mu.Lock()
 	h.runs++
 	h.requests = append(h.requests, request)
@@ -92,7 +92,7 @@ func TestGradeRunsAllowsMinorityBaselinePreference(t *testing.T) {
 			results = append(results, runResult{Case: item, Trial: 1, Variant: variant, RunDir: runDir, Artifact: variant, Agent: harness.Result{Duration: time.Millisecond}})
 		}
 	}
-	agent := &perCaseJudgeHarness{preferredVariants: map[string]string{
+	agent := &recordingJudgeHarness{preferredVariants: map[string]string{
 		"one":   variantWithSkill,
 		"two":   variantWithSkill,
 		"three": variantWithoutSkill,
@@ -202,55 +202,61 @@ func TestJudgeSchemasAreValidJSON(t *testing.T) {
 	}
 }
 
-func TestPerCaseJudgePromptsFitPreservedProductionSizeShape(t *testing.T) {
+func TestGradeRunsHandlesCaseWhoseTrialsOnlyFitIndividually(t *testing.T) {
 	t.Parallel()
 
-	contents, err := os.ReadFile(filepath.Join("testdata", "judge-production-size-shape.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fixture struct {
-		Cases []struct {
-			ID           string `json:"id"`
-			Trial        int    `json:"trial"`
-			WithBytes    int    `json:"with_bytes"`
-			WithoutBytes int    `json:"without_bytes"`
-		} `json:"cases"`
-	}
-	if err := json.Unmarshal(contents, &fixture); err != nil {
-		t.Fatal(err)
-	}
-	allInputs := make([]judgeInput, 0, len(fixture.Cases))
-	byCase := map[string][]judgeInput{}
-	for _, item := range fixture.Cases {
-		input := judgeInput{ID: item.ID, Trial: item.Trial, Assertions: []string{"correct"}, A: strings.Repeat("a", item.WithBytes), B: strings.Repeat("b", item.WithoutBytes)}
-		allInputs = append(allInputs, input)
-		byCase[item.ID] = append(byCase[item.ID], input)
-	}
-	fullPrompt, err := structuredJudgePrompt(graderPrompt, allInputs)
-	if err != nil {
-		t.Fatal(err)
-	}
 	const codexInputLimit = 1_048_576
-	if len(fullPrompt) <= codexInputLimit {
-		t.Fatalf("production-shaped aggregate = %d bytes, want over %d", len(fullPrompt), codexInputLimit)
+	item := Case{ID: "large", Assertions: []string{"correct"}}
+	inputs := make([]judgeInput, 0, 2)
+	results := make([]runResult, 0, 4)
+	root := t.TempDir()
+	for trial := 1; trial <= 2; trial++ {
+		artifacts := map[string]string{
+			variantWithSkill:    fmt.Sprintf("with-%d\n%s", trial, strings.Repeat("w", 1_000)),
+			variantWithoutSkill: fmt.Sprintf("without-%d\n%s", trial, strings.Repeat("b", 800_000)),
+		}
+		mapping := blindLabels(item.ID, trial, variantWithSkill, variantWithoutSkill)
+		inputs = append(inputs, judgeInput{ID: item.ID, Trial: trial, Assertions: item.Assertions, A: artifacts[mapping.A], B: artifacts[mapping.B]})
+		for variant, artifact := range artifacts {
+			runDir := filepath.Join(root, fmt.Sprintf("trial-%d", trial), variant)
+			if err := os.MkdirAll(runDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			results = append(results, runResult{Case: item, Trial: trial, Variant: variant, RunDir: runDir, Artifact: artifact})
+		}
 	}
-	for id, inputs := range byCase {
-		prompt, err := structuredJudgePrompt(graderPrompt, inputs)
+	casePrompt, err := structuredJudgePrompt(graderPrompt, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(casePrompt) <= codexInputLimit {
+		t.Fatalf("case prompt = %d bytes, want over %d", len(casePrompt), codexInputLimit)
+	}
+	for _, input := range inputs {
+		trialPrompt, err := structuredJudgePrompt(graderPrompt, []judgeInput{input})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(prompt) > codexInputLimit {
-			t.Fatalf("case %q prompt = %d bytes, exceeds %d", id, len(prompt), codexInputLimit)
+		if len(trialPrompt) > codexInputLimit {
+			t.Fatalf("trial %d prompt = %d bytes, exceeds %d", input.Trial, len(trialPrompt), codexInputLimit)
 		}
+	}
+
+	agent := &recordingJudgeHarness{rejectOverBytes: codexInputLimit}
+	graded, _, _, _, _, err := gradeRuns(context.Background(), agent, Suite{Kind: harness.TargetSkill, Cases: []Case{item}}, results, Config{Trials: 2, Timeout: time.Second}, root)
+	if err != nil {
+		t.Fatalf("gradeRuns() error = %v", err)
+	}
+	if len(graded) != len(results) {
+		t.Fatalf("graded runs = %d, want %d", len(graded), len(results))
 	}
 }
 
-func TestGradeRunsJudgesEachCaseSeparately(t *testing.T) {
+func TestGradeRunsJudgesEachTrialSeparately(t *testing.T) {
 	t.Parallel()
 
-	suite, results := perCaseJudgeSuite(t, 2)
-	agent := &perCaseJudgeHarness{}
+	suite, results := judgeSuite(t, 2)
+	agent := &recordingJudgeHarness{}
 	graded, _, _, _, _, err := gradeRuns(context.Background(), agent, suite, results, Config{Trials: 2, Timeout: time.Second}, t.TempDir())
 	if err != nil {
 		t.Fatalf("gradeRuns() error = %v", err)
@@ -266,15 +272,12 @@ func TestGradeRunsJudgesEachCaseSeparately(t *testing.T) {
 			if err := json.Unmarshal([]byte(payload), &inputs); err != nil {
 				t.Fatal(err)
 			}
-			if len(inputs) != 2 {
-				t.Fatalf("comparator case trials = %d, want 2", len(inputs))
+			if len(inputs) != 1 {
+				t.Fatalf("comparator prompt trials = %d, want 1", len(inputs))
 			}
-			id := inputs[0].ID
-			seen["comparator"][id]++
+			key := caseTrialKey(inputs[0].ID, inputs[0].Trial)
+			seen["comparator"][key]++
 			for _, input := range inputs {
-				if input.ID != id {
-					t.Fatalf("comparator mixed cases %q and %q", id, input.ID)
-				}
 				mapping := blindLabels(input.ID, input.Trial, variantWithSkill, variantWithoutSkill)
 				artifacts := resultArtifacts(results, input.ID, input.Trial)
 				if input.A != artifacts[mapping.A] || input.B != artifacts[mapping.B] {
@@ -287,15 +290,12 @@ func TestGradeRunsJudgesEachCaseSeparately(t *testing.T) {
 		if err := json.Unmarshal([]byte(payload), &inputs); err != nil {
 			t.Fatal(err)
 		}
-		if len(inputs) != 2 {
-			t.Fatalf("grader case trials = %d, want 2", len(inputs))
+		if len(inputs) != 1 {
+			t.Fatalf("grader prompt trials = %d, want 1", len(inputs))
 		}
-		id := inputs[0].ID
-		seen["grader"][id]++
+		key := caseTrialKey(inputs[0].ID, inputs[0].Trial)
+		seen["grader"][key]++
 		for _, input := range inputs {
-			if input.ID != id {
-				t.Fatalf("grader mixed cases %q and %q", id, input.ID)
-			}
 			mapping := blindLabels(input.ID, input.Trial, variantWithSkill, variantWithoutSkill)
 			artifacts := resultArtifacts(results, input.ID, input.Trial)
 			if input.A != artifacts[mapping.A] || input.B != artifacts[mapping.B] {
@@ -303,31 +303,31 @@ func TestGradeRunsJudgesEachCaseSeparately(t *testing.T) {
 			}
 		}
 	}
-	for stage, cases := range seen {
-		if len(cases) != len(suite.Cases) {
-			t.Fatalf("%s covered %d cases, want %d", stage, len(cases), len(suite.Cases))
+	for stage, trials := range seen {
+		if len(trials) != len(suite.Cases)*2 {
+			t.Fatalf("%s covered %d trials, want %d", stage, len(trials), len(suite.Cases)*2)
 		}
-		for id, count := range cases {
+		for key, count := range trials {
 			if count != 1 {
-				t.Fatalf("%s case %q was judged %d times", stage, id, count)
+				t.Fatalf("%s trial %q was judged %d times", stage, key, count)
 			}
 		}
 	}
 }
 
-func TestGradeRunsRejectsIncompletePerCaseOutput(t *testing.T) {
+func TestGradeRunsRejectsIncompletePerTrialOutput(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
 		name  string
-		agent *perCaseJudgeHarness
+		agent *recordingJudgeHarness
 		stage string
 	}{
-		{name: "grader", agent: &perCaseJudgeHarness{omitGraderKey: caseTrialKey("three", 2)}, stage: `grader case "three"`},
-		{name: "comparator", agent: &perCaseJudgeHarness{omitComparatorKey: caseTrialKey("three", 2)}, stage: `comparator case "three"`},
+		{name: "grader", agent: &recordingJudgeHarness{omitGraderKey: caseTrialKey("three", 2)}, stage: `grader case "three" trial 2`},
+		{name: "comparator", agent: &recordingJudgeHarness{omitComparatorKey: caseTrialKey("three", 2)}, stage: `comparator case "three" trial 2`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			suite, results := perCaseJudgeSuite(t, 2)
+			suite, results := judgeSuite(t, 2)
 			_, _, _, _, _, err := gradeRuns(context.Background(), test.agent, suite, results, Config{Trials: 2, Timeout: time.Second}, t.TempDir())
 			if err == nil || !strings.Contains(err.Error(), test.stage) {
 				t.Fatalf("gradeRuns() error = %v, want incomplete %s", err, test.stage)
@@ -336,7 +336,7 @@ func TestGradeRunsRejectsIncompletePerCaseOutput(t *testing.T) {
 	}
 }
 
-func TestGradeRunsReportsOversizedCasePrompt(t *testing.T) {
+func TestGradeRunsReportsOversizedTrialPrompt(t *testing.T) {
 	t.Parallel()
 
 	item := Case{ID: "oversized", Assertions: []string{"correct"}}
@@ -348,18 +348,18 @@ func TestGradeRunsReportsOversizedCasePrompt(t *testing.T) {
 		}
 		results = append(results, runResult{Case: item, Trial: 1, Variant: variant, RunDir: runDir, Artifact: strings.Repeat(variant, 1_000)})
 	}
-	_, _, _, _, _, err := gradeRuns(context.Background(), &perCaseJudgeHarness{rejectOverBytes: 1_000}, Suite{Kind: harness.TargetSkill, Cases: []Case{item}}, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir())
+	_, _, _, _, _, err := gradeRuns(context.Background(), &recordingJudgeHarness{rejectOverBytes: 1_000}, Suite{Kind: harness.TargetSkill, Cases: []Case{item}}, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir())
 	if err == nil {
 		t.Fatal("gradeRuns() accepted an oversized case prompt")
 	}
-	for _, want := range []string{`grader case "oversized"`, "prompt is", "bytes", "input_too_large"} {
+	for _, want := range []string{`grader case "oversized" trial 1`, "prompt is", "bytes", "input_too_large"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("oversized error %q lacks %q", err, want)
 		}
 	}
 }
 
-func perCaseJudgeSuite(t *testing.T, trials int) (Suite, []runResult) {
+func judgeSuite(t *testing.T, trials int) (Suite, []runResult) {
 	t.Helper()
 	cases := []Case{{ID: "one", Assertions: []string{"correct"}}, {ID: "two", Assertions: []string{"correct"}}, {ID: "three", Assertions: []string{"correct"}}}
 	results := make([]runResult, 0, len(cases)*trials*2)

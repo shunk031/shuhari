@@ -72,10 +72,11 @@ type rawJudgeEvidence struct {
 	Comparator string `json:"comparator"`
 }
 
-type caseJudgeInputs struct {
+type trialJudgeInputs struct {
 	ID         string
-	Grader     []judgeInput
-	Comparator []comparatorInput
+	Trial      int
+	Grader     judgeInput
+	Comparator comparatorInput
 }
 
 func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results []runResult, config Config, iteration string) ([]gradedRun, int, int, []string, string, error) {
@@ -83,11 +84,10 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 	for _, result := range results {
 		byKey[runKey(result.Case.ID, result.Trial, result.Variant)] = result
 	}
-	caseInputs := make([]caseJudgeInputs, 0, len(suite.Cases))
+	trialInputs := make([]trialJudgeInputs, 0, len(suite.Cases)*config.Trials)
 	mappings := map[string]blindMapping{}
 	withVariant, withoutVariant := variantsFor(suite.Kind)
 	for _, item := range suite.Cases {
-		inputs := caseJudgeInputs{ID: item.ID}
 		for trial := 1; trial <= config.Trials; trial++ {
 			with, withOK := byKey[runKey(item.ID, trial, withVariant)]
 			without, withoutOK := byKey[runKey(item.ID, trial, withoutVariant)]
@@ -99,19 +99,22 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 			mapping := blindLabels(item.ID, trial, withVariant, withoutVariant)
 			mappings[caseTrialKey(item.ID, trial)] = mapping
 			outputs := map[string]string{withVariant: with.Artifact, withoutVariant: without.Artifact}
-			inputs.Grader = append(inputs.Grader, judgeInput{ID: item.ID, Trial: trial, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B]})
-			inputs.Comparator = append(inputs.Comparator, comparatorInput{ID: item.ID, Trial: trial, Prompt: item.Prompt, ExpectedOutput: item.ExpectedOutput, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B]})
+			trialInputs = append(trialInputs, trialJudgeInputs{
+				ID:         item.ID,
+				Trial:      trial,
+				Grader:     judgeInput{ID: item.ID, Trial: trial, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B]},
+				Comparator: comparatorInput{ID: item.ID, Trial: trial, Prompt: item.Prompt, ExpectedOutput: item.ExpectedOutput, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B]},
+			})
 		}
-		caseInputs = append(caseInputs, inputs)
 	}
 
-	graderEntries, graderResponse, err := runGradersPerCase(ctx, agent, caseInputs, config)
+	graderEntries, graderResponse, err := runGradersPerTrial(ctx, agent, trialInputs, config)
 	if err != nil {
 		persistGradingError(iteration, "grader", graderResponse, "", mappings, err)
 		return nil, 0, 0, nil, graderResponse, err
 	}
 
-	comparatorEntries, comparatorResponse, err := runComparatorsPerCase(ctx, agent, caseInputs, config)
+	comparatorEntries, comparatorResponse, err := runComparatorsPerTrial(ctx, agent, trialInputs, config)
 	rawEvidence, _ := json.Marshal(rawJudgeEvidence{Grader: graderResponse, Comparator: comparatorResponse})
 	if err != nil {
 		persistGradingError(iteration, "comparator", graderResponse, comparatorResponse, mappings, err)
@@ -174,23 +177,24 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 	return graded, candidateWins, baselineWins, nil, string(rawEvidence), nil
 }
 
-func runGradersPerCase(ctx context.Context, agent harness.Harness, inputs []caseJudgeInputs, config Config) (map[string]judgeEntry, string, error) {
+func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config) (map[string]judgeEntry, string, error) {
 	merged := judgeOutput{}
 	entries := map[string]judgeEntry{}
 	for _, item := range inputs {
-		response, err := runStructuredJudge(ctx, agent, graderPrompt, item.Grader, graderSchema(), config)
+		graderInputs := []judgeInput{item.Grader}
+		response, err := runStructuredJudge(ctx, agent, graderPrompt, graderInputs, graderSchema(), config)
 		if err != nil {
-			return nil, response, fmt.Errorf("grader case %q: %w", item.ID, err)
+			return nil, response, fmt.Errorf("grader case %q trial %d: %w", item.ID, item.Trial, err)
 		}
 		var output judgeOutput
 		if err := json.Unmarshal([]byte(response), &output); err != nil {
-			return nil, response, fmt.Errorf("decode grader case %q response: %w", item.ID, err)
+			return nil, response, fmt.Errorf("decode grader case %q trial %d response: %w", item.ID, item.Trial, err)
 		}
-		caseEntries, err := validateGraderEntries(output, item.Grader)
+		trialEntries, err := validateGraderEntries(output, graderInputs)
 		if err != nil {
-			return nil, response, fmt.Errorf("validate grader case %q: %w", item.ID, err)
+			return nil, response, fmt.Errorf("validate grader case %q trial %d: %w", item.ID, item.Trial, err)
 		}
-		for key, entry := range caseEntries {
+		for key, entry := range trialEntries {
 			entries[key] = entry
 		}
 		merged.Cases = append(merged.Cases, output.Cases...)
@@ -202,23 +206,24 @@ func runGradersPerCase(ctx context.Context, agent harness.Harness, inputs []case
 	return entries, string(encoded), nil
 }
 
-func runComparatorsPerCase(ctx context.Context, agent harness.Harness, inputs []caseJudgeInputs, config Config) (map[string]comparatorEntry, string, error) {
+func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config) (map[string]comparatorEntry, string, error) {
 	merged := comparatorOutput{}
 	entries := map[string]comparatorEntry{}
 	for _, item := range inputs {
-		response, err := runStructuredJudge(ctx, agent, comparatorPrompt, item.Comparator, comparatorSchema(), config)
+		comparatorInputs := []comparatorInput{item.Comparator}
+		response, err := runStructuredJudge(ctx, agent, comparatorPrompt, comparatorInputs, comparatorSchema(), config)
 		if err != nil {
-			return nil, response, fmt.Errorf("comparator case %q: %w", item.ID, err)
+			return nil, response, fmt.Errorf("comparator case %q trial %d: %w", item.ID, item.Trial, err)
 		}
 		var output comparatorOutput
 		if err := json.Unmarshal([]byte(response), &output); err != nil {
-			return nil, response, fmt.Errorf("decode comparator case %q response: %w", item.ID, err)
+			return nil, response, fmt.Errorf("decode comparator case %q trial %d response: %w", item.ID, item.Trial, err)
 		}
-		caseEntries, err := validateComparatorEntries(output, item.Comparator)
+		trialEntries, err := validateComparatorEntries(output, comparatorInputs)
 		if err != nil {
-			return nil, response, fmt.Errorf("validate comparator case %q: %w", item.ID, err)
+			return nil, response, fmt.Errorf("validate comparator case %q trial %d: %w", item.ID, item.Trial, err)
 		}
-		for key, entry := range caseEntries {
+		for key, entry := range trialEntries {
 			entries[key] = entry
 		}
 		merged.Cases = append(merged.Cases, output.Cases...)

@@ -19,6 +19,8 @@ import (
 
 var unsafePath = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
+const maxInlineArtifactBytes = 64 * 1024
+
 func createIteration(suite Suite, configured string) (string, error) {
 	root := configured
 	if root == "" {
@@ -215,8 +217,16 @@ func renderArtifact(outputDir string) (string, error) {
 	}); err != nil {
 		return "", fmt.Errorf("walk output artifacts: %w", err)
 	}
-	sort.Strings(paths)
+	responsePath := filepath.Join(outputDir, "response.md")
+	sort.Slice(paths, func(i, j int) bool {
+		iResponse, jResponse := paths[i] == responsePath, paths[j] == responsePath
+		if iResponse != jResponse {
+			return iResponse
+		}
+		return paths[i] < paths[j]
+	})
 	var builder strings.Builder
+	inlineBytes := 0
 	for _, path := range paths {
 		info, err := os.Lstat(path)
 		if err != nil {
@@ -236,18 +246,50 @@ func renderArtifact(outputDir string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read output artifact: %w", err)
 		}
-		fmt.Fprintf(&builder, "\n--- file: %s (%d bytes) ---\n", filepath.ToSlash(relative), len(contents))
-		if len(contents) <= 64*1024 && utf8.Valid(contents) && !bytes.ContainsRune(contents, '\x00') {
-			builder.Write(contents)
-			if len(contents) == 0 || contents[len(contents)-1] != '\n' {
-				builder.WriteByte('\n')
-			}
-		} else {
+		relativePath := filepath.ToSlash(relative)
+		reason := artifactMetadataReason(relativePath, contents)
+		if reason == "" && inlineBytes+len(contents) > maxInlineArtifactBytes {
+			reason = "text-budget"
+		}
+		if reason != "" {
 			digest := sha256.Sum256(contents)
-			fmt.Fprintf(&builder, "binary sha256=%s\n", hex.EncodeToString(digest[:]))
+			metadata, err := json.Marshal(struct {
+				Path   string `json:"path"`
+				Size   int    `json:"size"`
+				SHA256 string `json:"sha256"`
+				Reason string `json:"reason"`
+			}{Path: relativePath, Size: len(contents), SHA256: hex.EncodeToString(digest[:]), Reason: reason})
+			if err != nil {
+				return "", fmt.Errorf("encode output artifact metadata: %w", err)
+			}
+			builder.WriteString("\n--- file metadata ---\n")
+			builder.Write(metadata)
+			builder.WriteByte('\n')
+			continue
+		}
+		fmt.Fprintf(&builder, "\n--- file: %s (%d bytes) ---\n", relativePath, len(contents))
+		builder.Write(contents)
+		inlineBytes += len(contents)
+		if len(contents) == 0 || contents[len(contents)-1] != '\n' {
+			builder.WriteByte('\n')
 		}
 	}
 	return strings.TrimSpace(builder.String()), nil
+}
+
+func artifactMetadataReason(path string, contents []byte) string {
+	for _, component := range strings.Split(path, "/") {
+		if component == ".git" {
+			return "git-internal"
+		}
+	}
+	if !utf8.Valid(contents) || bytes.ContainsRune(contents, '\x00') {
+		return "non-text"
+	}
+	if len(contents) > maxInlineArtifactBytes {
+		return "oversized-text"
+	}
+	return ""
 }
 
 func suiteDigest(suite Suite) (string, error) {
