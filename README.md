@@ -18,7 +18,7 @@ Adapters are narrow; eval schemas and workspace artifacts stay the same across a
 
 ### GitHub Releases
 
-Download a prebuilt archive from the [releases page](https://github.com/shunk031/shuhari/releases) and place `shuhari` on your `PATH`.
+Download the archive for your platform from the [releases page](https://github.com/shunk031/shuhari/releases), extract it, and place `shuhari` on your `PATH`.
 
 ### Go
 
