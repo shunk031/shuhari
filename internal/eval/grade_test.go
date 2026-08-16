@@ -93,8 +93,46 @@ func TestBuildGradingRejectsBlankOrUnsupportedEvidence(t *testing.T) {
 	if !evidenceQuotesArtifact(`Excerpt: "first\nsecond"`, "first\nsecond") {
 		t.Fatal("escaped newline in quoted evidence was not matched to the artifact")
 	}
-	if !evidenceQuotesArtifact("Observed `actual output`.", "actual output") {
-		t.Fatal("backtick-quoted evidence was not matched to the artifact")
+	if evidenceQuotesArtifact("Observed `actual output`.", "actual output") {
+		t.Fatal("backticks were accepted as quotation marks")
+	}
+}
+
+func TestBuildGradingValidatesPreservedProductionEvidence(t *testing.T) {
+	t.Parallel()
+
+	fixtureBytes, err := os.ReadFile(filepath.Join("testdata", "grader-evidence-backticks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures []struct {
+		Source   string `json:"source"`
+		Artifact string `json:"artifact"`
+		Evidence string `json:"evidence"`
+		Valid    bool   `json:"valid"`
+	}
+	if err := json.Unmarshal(fixtureBytes, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, fixture := range fixtures {
+		fixture := fixture
+		t.Run(fixture.Source, func(t *testing.T) {
+			grading, err := buildGrading(
+				[]string{"artifact observation is grounded"},
+				[]AssertionResult{{Text: "artifact observation is grounded", Passed: true, Evidence: fixture.Evidence}},
+				fixture.Artifact,
+			)
+			if fixture.Valid && err != nil {
+				t.Fatalf("buildGrading() rejected preserved production evidence: %v", err)
+			}
+			if !fixture.Valid && err == nil {
+				t.Fatal("buildGrading() accepted preserved evidence with no verbatim artifact observation")
+			}
+			if fixture.Valid && grading.Summary.Passed != 1 {
+				t.Fatalf("passed assertions = %d, want 1", grading.Summary.Passed)
+			}
+		})
 	}
 }
 

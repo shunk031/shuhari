@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -260,8 +259,6 @@ func validateComparatorEntries(output comparatorOutput, inputs []comparatorInput
 	return entries, nil
 }
 
-var quotedEvidence = regexp.MustCompile("[\\\"“`]([^\\\"”`]+)[\\\"”`]")
-
 func buildGrading(expected []string, actual []AssertionResult, artifact string) (Grading, error) {
 	if len(expected) != len(actual) {
 		return Grading{}, fmt.Errorf("%w: grader returned %d assertions, want %d", errInvalidGrading, len(actual), len(expected))
@@ -300,16 +297,47 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 }
 
 func evidenceQuotesArtifact(evidence, artifact string) bool {
-	for _, match := range quotedEvidence.FindAllStringSubmatch(evidence, -1) {
-		if len(match) < 2 {
-			continue
-		}
-		quoted := strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\"`, `"`).Replace(match[1])
+	for _, observation := range quotedObservations(evidence) {
+		quoted := strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\"`, `"`).Replace(observation)
 		if strings.TrimSpace(quoted) != "" && strings.Contains(artifact, quoted) {
 			return true
 		}
 	}
 	return false
+}
+
+func quotedObservations(evidence string) []string {
+	runes := []rune(evidence)
+	observations := make([]string, 0, 1)
+	for index := 0; index < len(runes); index++ {
+		opening := runes[index]
+		closing := rune(0)
+		switch opening {
+		case '"':
+			closing = '"'
+		case '“':
+			closing = '”'
+		default:
+			continue
+		}
+		for end := index + 1; end < len(runes); end++ {
+			if runes[end] != closing || (closing == '"' && escapedQuote(runes, end)) {
+				continue
+			}
+			observations = append(observations, string(runes[index+1:end]))
+			index = end
+			break
+		}
+	}
+	return observations
+}
+
+func escapedQuote(value []rune, index int) bool {
+	backslashes := 0
+	for index--; index >= 0 && value[index] == '\\'; index-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
 }
 
 func blindLabels(id string, trial int, with, without string) blindMapping {
