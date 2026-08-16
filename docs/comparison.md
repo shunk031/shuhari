@@ -2,7 +2,7 @@
 
 Maintainers choosing an evaluation tool can use this table to compare built-in behavior documented on 2026-08-16. It focuses on skill and context evaluators; Inspect AI represents general agent-evaluation frameworks. The table is maintained by Shuhari's authors and may be incomplete.
 
-| Feature | Shuhari | Anthropic skill-creator | Microsoft Waza | NVIDIA SkillEvaluator | Tessl | Inspect AI |
+| Feature | [Shuhari](https://github.com/shunk031/shuhari) | [Anthropic skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) | [Microsoft Waza](https://github.com/microsoft/waza) | [NVIDIA SkillEvaluator](https://github.com/NVIDIA/SkillEvaluator) | [Tessl](https://docs.tessl.io/) | [Inspect AI](https://github.com/UKGovernmentBEIS/inspect_ai) |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: |
 | Agent skills as first-class targets | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Repository guidance as a first-class target | ✅ | — | — | — | ✅ | — |
