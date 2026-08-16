@@ -47,7 +47,9 @@ Shuhari groups output evaluation and trigger checks as sibling commands:
 - `shuhari check` measures gate-oriented behavior.
   - `shuhari check trigger <skill-path>`
 
-### Prepare a skill evaluation
+### Evaluate a skill
+
+#### Prepare the cases
 
 Place `evals/evals.json` inside the skill directory:
 
@@ -71,9 +73,7 @@ Place `evals/evals.json` inside the skill directory:
 
 `prompt`, `expected_output`, and `files` follow the [Agent Skills guide](https://agentskills.io/skill-creation/evaluating-skills). Add `assertions` after inspecting the first run; when they are omitted, Shuhari grades the human-readable `expected_output`. File paths are relative to the skill root and cannot escape it.
 
-### Evaluate a skill
-
-Run the evaluation:
+#### Run the evaluation and read the workspace
 
 ```sh
 shuhari eval skill path/to/csv-analyzer
@@ -105,7 +105,9 @@ With multiple trials, trial 1 occupies the canonical path above and later trials
 - `manifest.json` lets you check whether the inputs, runner, agent settings, or judge prompts changed before comparing two iterations.
 - Checked-in JSON Schemas under [`schemas/`](schemas/) define the input and durable artifact contracts.
 
-### Prepare an instructions evaluation
+### Evaluate instructions
+
+#### Prepare the cases
 
 Instructions use the same run, grade, and aggregate flow. By default, `AGENTS.md` is paired with `AGENTS.evals.json` in the same directory:
 
@@ -125,9 +127,7 @@ Instructions use the same run, grade, and aggregate flow. By default, `AGENTS.md
 
 Use `--evals <path>` when the eval file is elsewhere.
 
-### Evaluate instructions
-
-Run the evaluation:
+#### Run the evaluation
 
 ```sh
 shuhari eval instructions path/to/AGENTS.md
@@ -163,31 +163,7 @@ Both positive cases and negative controls are required. Positive cases pass by p
 shuhari check trigger path/to/csv-analyzer --trials 3 --jobs 2 --timeout 600
 ```
 
-### Add a repository gate
-
-Shuhari implements the portable evaluation mechanism; each consuming repository decides when it runs and with what policy. A typical setup invokes Shuhari from a [pre-commit](https://github.com/pre-commit/pre-commit) hook or a CI job. The repository owns file selection and policy values such as trials, concurrency, timeout, and network access, and it owns skip conventions such as pre-commit's `SKIP` environment variable. Write those values explicitly in the hook or job definition instead of relying on defaults:
-
-```yaml
-- repo: local
-  hooks:
-    - id: skill-eval
-      name: evaluate changed skills
-      entry: shuhari eval skill --trials 3 --jobs 2 --timeout 600
-      language: system
-      files: ^skills/.+/(SKILL\.md|evals/.+)$
-      pass_filenames: true
-
-    - id: skill-trigger
-      name: check skill triggers
-      entry: shuhari check trigger skills/csv-analyzer --trials 3 --jobs 2 --timeout 600
-      language: system
-      files: ^skills/csv-analyzer/(SKILL\.md|evals/triggers\.json)$
-      pass_filenames: false
-```
-
-Changed files passed to `eval skill` are resolved to the nearest `SKILL.md` and deduplicated. Use `--validate-only` for a fast schema and fixture check that does not start an agent. The hook consumes Shuhari's exit status: `0` is a pass, `1` is an evaluation or trigger-policy failure, and `2` is invalid input or an execution error.
-
-### Configure evaluation runs
+## Configure evaluation runs
 
 Runs are sandboxed and offline by default, whichever agent executes them. Sandbox level names come from the agent adapter; with the Codex adapter the default is `workspace-write`. Enable network access only for cases that need it:
 
@@ -211,6 +187,30 @@ shuhari eval skill path/to/skill
 ```
 
 This override removes the agent's filesystem and network boundary, so Shuhari refuses to start without the acknowledgement variable and labels the resulting verdict artifacts with `credential_boundary: none`. The [credential boundary](docs/architecture.md#credential-boundary) documentation explains exactly what protection remains in this mode.
+
+## Add a repository gate
+
+Shuhari implements the portable evaluation mechanism; each consuming repository decides when it runs and with what policy. A typical setup invokes Shuhari from a [pre-commit](https://github.com/pre-commit/pre-commit) hook or a CI job. The repository owns file selection and policy values such as trials, concurrency, timeout, and network access, and it owns skip conventions such as pre-commit's `SKIP` environment variable. Write those values explicitly in the hook or job definition instead of relying on defaults:
+
+```yaml
+- repo: local
+  hooks:
+    - id: skill-eval
+      name: evaluate changed skills
+      entry: shuhari eval skill --trials 3 --jobs 2 --timeout 600
+      language: system
+      files: ^skills/.+/(SKILL\.md|evals/.+)$
+      pass_filenames: true
+
+    - id: skill-trigger
+      name: check skill triggers
+      entry: shuhari check trigger skills/csv-analyzer --trials 3 --jobs 2 --timeout 600
+      language: system
+      files: ^skills/csv-analyzer/(SKILL\.md|evals/triggers\.json)$
+      pass_filenames: false
+```
+
+Changed files passed to `eval skill` are resolved to the nearest `SKILL.md` and deduplicated. Use `--validate-only` for a fast schema and fixture check that does not start an agent. The hook consumes Shuhari's exit status: `0` is a pass, `1` is an evaluation or trigger-policy failure, and `2` is invalid input or an execution error.
 
 ## License
 
