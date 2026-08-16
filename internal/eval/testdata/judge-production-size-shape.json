@@ -1,0 +1,14 @@
+{
+  "source": "size distribution derived from a production run that exceeded the judge input limit",
+  "cases": [
+    {"id": "case-a", "trial": 1, "with_bytes": 8050, "without_bytes": 10409},
+    {"id": "case-a", "trial": 2, "with_bytes": 7585, "without_bytes": 11701},
+    {"id": "case-a", "trial": 3, "with_bytes": 6516, "without_bytes": 11362},
+    {"id": "case-b", "trial": 1, "with_bytes": 1284, "without_bytes": 3065},
+    {"id": "case-b", "trial": 2, "with_bytes": 1677, "without_bytes": 3707},
+    {"id": "case-b", "trial": 3, "with_bytes": 2215, "without_bytes": 562},
+    {"id": "case-c", "trial": 1, "with_bytes": 337, "without_bytes": 801532},
+    {"id": "case-c", "trial": 2, "with_bytes": 438, "without_bytes": 229465},
+    {"id": "case-c", "trial": 3, "with_bytes": 750, "without_bytes": 435}
+  ]
+}

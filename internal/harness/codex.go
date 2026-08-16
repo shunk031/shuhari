@@ -21,6 +21,7 @@ import (
 )
 
 var transientPattern = regexp.MustCompile(`(?i)(?:429|too many requests|timed? ?out|timeout|connection|network|tls|temporar|unavailable|rate.?limit|reset by peer|empty response)`)
+var inputTooLargePattern = regexp.MustCompile(`(?i)(?:input_too_large|input exceeds the maximum length)`)
 
 type codexHarness struct {
 	executable string
@@ -226,6 +227,9 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = strings.TrimSpace(stdout.String())
+		}
+		if inputTooLargePattern.MatchString(message) {
+			return Result{}, fmt.Errorf("codex failed: %w: %s", err, message)
 		}
 		if transientPattern.MatchString(message) {
 			return Result{}, fmt.Errorf("%w: %s", ErrTransient, message)
