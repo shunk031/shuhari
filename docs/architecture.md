@@ -77,4 +77,4 @@ Native successful actions retain their trace order. Shuhari also compares the wo
 
 ## Documentation growth
 
-Keep development documents flat under `docs/` while each subject fits in one page. Expected siblings include schema references, eval-authoring guidance, integration boundaries, and the release process. Create a subject subdirectory only when one of those topics grows into multiple documents; do not add empty category directories in advance.
+Keep development documents flat under `docs/` while each subject fits in one page. Expected siblings include schema references, [eval-authoring guidance](eval-authoring.md), integration boundaries, and the release process. Create a subject subdirectory only when one of those topics grows into multiple documents; do not add empty category directories in advance.
