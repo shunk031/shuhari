@@ -13,17 +13,22 @@ import (
 	"github.com/shunk031/shuhari/internal/harness"
 )
 
-type batchingJudgeHarness struct {
+type perCaseJudgeHarness struct {
 	fakeHarness
 	omitGraderKey     string
 	omitComparatorKey string
+	rejectOverBytes   int
+	preferredVariants map[string]string
 }
 
-func (h *batchingJudgeHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
+func (h *perCaseJudgeHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
 	h.mu.Lock()
 	h.runs++
 	h.requests = append(h.requests, request)
 	h.mu.Unlock()
+	if h.rejectOverBytes > 0 && len(request.Prompt) > h.rejectOverBytes {
+		return harness.Result{}, fmt.Errorf("input_too_large: prompt is %d bytes; limit is %d bytes", len(request.Prompt), h.rejectOverBytes)
+	}
 	payload := request.Prompt[strings.LastIndex(request.Prompt, "\n\n")+2:]
 	if strings.Contains(string(request.OutputSchema), `"preferred"`) {
 		var inputs []comparatorInput
@@ -35,7 +40,12 @@ func (h *batchingJudgeHarness) Run(_ context.Context, request harness.Request) (
 			if caseTrialKey(input.ID, input.Trial) == h.omitComparatorKey {
 				continue
 			}
-			output.Cases = append(output.Cases, comparatorEntry{ID: input.ID, Trial: input.Trial, Preferred: "tie", Reason: "equivalent"})
+			preferred := "tie"
+			if variant := h.preferredVariants[input.ID]; variant != "" {
+				mapping := blindLabels(input.ID, input.Trial, variantWithSkill, variantWithoutSkill)
+				preferred = preferredLabel(mapping, variant)
+			}
+			output.Cases = append(output.Cases, comparatorEntry{ID: input.ID, Trial: input.Trial, Preferred: preferred, Reason: "comparison"})
 		}
 		encoded, _ := json.Marshal(output)
 		return harness.Result{Response: string(encoded)}, nil
@@ -51,7 +61,11 @@ func (h *batchingJudgeHarness) Run(_ context.Context, request harness.Request) (
 		}
 		results := func(artifact string) []AssertionResult {
 			observation := strings.SplitN(artifact, "\n", 2)[0]
-			return []AssertionResult{{Text: "correct", Passed: true, Evidence: fmt.Sprintf(`Observed %q.`, observation)}}
+			results := make([]AssertionResult, 0, len(input.Assertions))
+			for _, assertion := range input.Assertions {
+				results = append(results, AssertionResult{Text: assertion, Passed: true, Evidence: fmt.Sprintf(`Observed %q.`, observation)})
+			}
+			return results
 		}
 		output.Cases = append(output.Cases, judgeEntry{ID: input.ID, Trial: input.Trial, AAssertionResults: results(input.A), BAssertionResults: results(input.B)})
 	}
@@ -68,24 +82,8 @@ func TestGradeRunsAllowsMinorityBaselinePreference(t *testing.T) {
 		{ID: "two", ExpectedOutput: "correct"},
 		{ID: "three", ExpectedOutput: "correct"},
 	}
-	entries := make([]judgeEntry, 0, len(cases))
-	comparisons := make([]comparatorEntry, 0, len(cases))
 	results := make([]runResult, 0, len(cases)*2)
-	for index, item := range cases {
-		mapping := blindLabels(item.ID, 1, variantWithSkill, variantWithoutSkill)
-		preferredVariant := variantWithSkill
-		if index == len(cases)-1 {
-			preferredVariant = variantWithoutSkill
-		}
-		grades := map[string][]AssertionResult{
-			variantWithSkill:    {{Text: "correct", Passed: true, Evidence: `Observed "with_skill".`}},
-			variantWithoutSkill: {{Text: "correct", Passed: true, Evidence: `Observed "without_skill".`}},
-		}
-		entries = append(entries, judgeEntry{
-			ID: item.ID, Trial: 1,
-			AAssertionResults: grades[mapping.A], BAssertionResults: grades[mapping.B],
-		})
-		comparisons = append(comparisons, comparatorEntry{ID: item.ID, Trial: 1, Preferred: preferredLabel(mapping, preferredVariant), Reason: "comparison"})
+	for _, item := range cases {
 		for _, variant := range []string{variantWithSkill, variantWithoutSkill} {
 			runDir := filepath.Join(root, item.ID, variant)
 			if err := os.MkdirAll(runDir, 0o755); err != nil {
@@ -94,15 +92,11 @@ func TestGradeRunsAllowsMinorityBaselinePreference(t *testing.T) {
 			results = append(results, runResult{Case: item, Trial: 1, Variant: variant, RunDir: runDir, Artifact: variant, Agent: harness.Result{Duration: time.Millisecond}})
 		}
 	}
-	encoded, err := json.Marshal(judgeOutput{Cases: entries})
-	if err != nil {
-		t.Fatal(err)
-	}
-	compared, err := json.Marshal(comparatorOutput{Cases: comparisons})
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent := &fakeHarness{judgeResponse: string(encoded), compareResponse: string(compared)}
+	agent := &perCaseJudgeHarness{preferredVariants: map[string]string{
+		"one":   variantWithSkill,
+		"two":   variantWithSkill,
+		"three": variantWithoutSkill,
+	}}
 	_, candidateWins, baselineWins, reasons, _, err := gradeRuns(context.Background(), agent, Suite{Kind: harness.TargetSkill, Cases: cases}, results, Config{Trials: 1, Timeout: time.Second}, root)
 	if err != nil {
 		t.Fatalf("gradeRuns() error = %v", err)
@@ -208,10 +202,10 @@ func TestJudgeSchemasAreValidJSON(t *testing.T) {
 	}
 }
 
-func TestJudgeBatchingMatchesPreservedProductionShape(t *testing.T) {
+func TestPerCaseJudgePromptsFitPreservedProductionSizeShape(t *testing.T) {
 	t.Parallel()
 
-	contents, err := os.ReadFile(filepath.Join("testdata", "judge-batching-production-shape.json"))
+	contents, err := os.ReadFile(filepath.Join("testdata", "judge-production-size-shape.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,134 +220,115 @@ func TestJudgeBatchingMatchesPreservedProductionShape(t *testing.T) {
 	if err := json.Unmarshal(contents, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	inputs := make([]judgeInput, 0, len(fixture.Cases))
+	allInputs := make([]judgeInput, 0, len(fixture.Cases))
+	byCase := map[string][]judgeInput{}
 	for _, item := range fixture.Cases {
-		inputs = append(inputs, judgeInput{ID: item.ID, Trial: item.Trial, Assertions: []string{"correct"}, A: strings.Repeat("a", item.WithBytes), B: strings.Repeat("b", item.WithoutBytes)})
+		input := judgeInput{ID: item.ID, Trial: item.Trial, Assertions: []string{"correct"}, A: strings.Repeat("a", item.WithBytes), B: strings.Repeat("b", item.WithoutBytes)}
+		allInputs = append(allInputs, input)
+		byCase[item.ID] = append(byCase[item.ID], input)
 	}
-	fullPrompt, err := structuredJudgePrompt(graderPrompt, inputs)
+	fullPrompt, err := structuredJudgePrompt(graderPrompt, allInputs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fullPrompt) <= maxStructuredJudgePromptBytes {
-		t.Fatalf("production-shaped aggregate = %d bytes, want over %d", len(fullPrompt), maxStructuredJudgePromptBytes)
+	const codexInputLimit = 1_048_576
+	if len(fullPrompt) <= codexInputLimit {
+		t.Fatalf("production-shaped aggregate = %d bytes, want over %d", len(fullPrompt), codexInputLimit)
 	}
-	batches, err := batchStructuredJudgeInputs("grader", graderPrompt, inputs, maxStructuredJudgePromptBytes, func(input judgeInput) (string, int) { return input.ID, input.Trial })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(batches) < 2 {
-		t.Fatalf("batches = %d, want multiple", len(batches))
-	}
-	seen := map[string]int{}
-	caseBatches := map[string]map[int]bool{}
-	for batchIndex, batch := range batches {
-		prompt, err := structuredJudgePrompt(graderPrompt, batch)
+	for id, inputs := range byCase {
+		prompt, err := structuredJudgePrompt(graderPrompt, inputs)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(prompt) > maxStructuredJudgePromptBytes {
-			t.Fatalf("batch %d = %d bytes, exceeds %d", batchIndex, len(prompt), maxStructuredJudgePromptBytes)
+		if len(prompt) > codexInputLimit {
+			t.Fatalf("case %q prompt = %d bytes, exceeds %d", id, len(prompt), codexInputLimit)
 		}
-		for _, input := range batch {
-			key := caseTrialKey(input.ID, input.Trial)
-			seen[key]++
-			if caseBatches[input.ID] == nil {
-				caseBatches[input.ID] = map[int]bool{}
-			}
-			caseBatches[input.ID][batchIndex] = true
-		}
-	}
-	if len(seen) != len(inputs) {
-		t.Fatalf("batched case-trials = %d, want %d", len(seen), len(inputs))
-	}
-	for key, count := range seen {
-		if count != 1 {
-			t.Fatalf("case-trial %q appears in %d batches", key, count)
-		}
-	}
-	if len(caseBatches["case-c"]) < 2 {
-		t.Fatal("fixture did not exercise the documented per-trial split for one case")
 	}
 }
 
-func TestGradeRunsBatchesJudgesWithoutChangingBlindMappings(t *testing.T) {
+func TestGradeRunsJudgesEachCaseSeparately(t *testing.T) {
 	t.Parallel()
 
-	suite, results := largeBatchingSuite(t)
-	agent := &batchingJudgeHarness{}
-	graded, _, _, _, _, err := gradeRuns(context.Background(), agent, suite, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir())
+	suite, results := perCaseJudgeSuite(t, 2)
+	agent := &perCaseJudgeHarness{}
+	graded, _, _, _, _, err := gradeRuns(context.Background(), agent, suite, results, Config{Trials: 2, Timeout: time.Second}, t.TempDir())
 	if err != nil {
 		t.Fatalf("gradeRuns() error = %v", err)
 	}
 	if len(graded) != len(results) {
 		t.Fatalf("graded runs = %d, want %d", len(graded), len(results))
 	}
-	graderRequests, comparatorRequests := 0, 0
-	graderSeen := map[string]int{}
-	comparatorSeen := map[string]int{}
+	seen := map[string]map[string]int{"grader": {}, "comparator": {}}
 	for _, request := range agent.requests {
 		payload := request.Prompt[strings.LastIndex(request.Prompt, "\n\n")+2:]
 		if strings.Contains(string(request.OutputSchema), `"preferred"`) {
-			comparatorRequests++
 			var inputs []comparatorInput
 			if err := json.Unmarshal([]byte(payload), &inputs); err != nil {
 				t.Fatal(err)
 			}
+			if len(inputs) != 2 {
+				t.Fatalf("comparator case trials = %d, want 2", len(inputs))
+			}
+			id := inputs[0].ID
+			seen["comparator"][id]++
 			for _, input := range inputs {
-				key := caseTrialKey(input.ID, input.Trial)
-				comparatorSeen[key]++
+				if input.ID != id {
+					t.Fatalf("comparator mixed cases %q and %q", id, input.ID)
+				}
 				mapping := blindLabels(input.ID, input.Trial, variantWithSkill, variantWithoutSkill)
 				artifacts := resultArtifacts(results, input.ID, input.Trial)
 				if input.A != artifacts[mapping.A] || input.B != artifacts[mapping.B] {
-					t.Fatalf("comparator batch changed blind mapping for %s", key)
+					t.Fatalf("comparator changed blind mapping for %s", caseTrialKey(input.ID, input.Trial))
 				}
 			}
 			continue
 		}
-		graderRequests++
 		var inputs []judgeInput
 		if err := json.Unmarshal([]byte(payload), &inputs); err != nil {
 			t.Fatal(err)
 		}
+		if len(inputs) != 2 {
+			t.Fatalf("grader case trials = %d, want 2", len(inputs))
+		}
+		id := inputs[0].ID
+		seen["grader"][id]++
 		for _, input := range inputs {
-			key := caseTrialKey(input.ID, input.Trial)
-			graderSeen[key]++
+			if input.ID != id {
+				t.Fatalf("grader mixed cases %q and %q", id, input.ID)
+			}
 			mapping := blindLabels(input.ID, input.Trial, variantWithSkill, variantWithoutSkill)
 			artifacts := resultArtifacts(results, input.ID, input.Trial)
 			if input.A != artifacts[mapping.A] || input.B != artifacts[mapping.B] {
-				t.Fatalf("batch changed blind mapping for %s", key)
+				t.Fatalf("grader changed blind mapping for %s", caseTrialKey(input.ID, input.Trial))
 			}
 		}
 	}
-	if graderRequests < 2 || comparatorRequests < 2 {
-		t.Fatalf("judge requests grader=%d comparator=%d, want separate multiple batches", graderRequests, comparatorRequests)
-	}
-	for stage, seen := range map[string]map[string]int{"grader": graderSeen, "comparator": comparatorSeen} {
-		if len(seen) != len(suite.Cases) {
-			t.Fatalf("%s covered %d case-trials, want %d", stage, len(seen), len(suite.Cases))
+	for stage, cases := range seen {
+		if len(cases) != len(suite.Cases) {
+			t.Fatalf("%s covered %d cases, want %d", stage, len(cases), len(suite.Cases))
 		}
-		for key, count := range seen {
+		for id, count := range cases {
 			if count != 1 {
-				t.Fatalf("%s case-trial %q appeared %d times", stage, key, count)
+				t.Fatalf("%s case %q was judged %d times", stage, id, count)
 			}
 		}
 	}
 }
 
-func TestGradeRunsRejectsIncompleteBatchOutput(t *testing.T) {
+func TestGradeRunsRejectsIncompletePerCaseOutput(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
 		name  string
-		agent *batchingJudgeHarness
+		agent *perCaseJudgeHarness
 		stage string
 	}{
-		{name: "grader", agent: &batchingJudgeHarness{omitGraderKey: caseTrialKey("three", 1)}, stage: "grader batch"},
-		{name: "comparator", agent: &batchingJudgeHarness{omitComparatorKey: caseTrialKey("three", 1)}, stage: "comparator batch"},
+		{name: "grader", agent: &perCaseJudgeHarness{omitGraderKey: caseTrialKey("three", 2)}, stage: `grader case "three"`},
+		{name: "comparator", agent: &perCaseJudgeHarness{omitComparatorKey: caseTrialKey("three", 2)}, stage: `comparator case "three"`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			suite, results := largeBatchingSuite(t)
-			_, _, _, _, _, err := gradeRuns(context.Background(), test.agent, suite, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir())
+			suite, results := perCaseJudgeSuite(t, 2)
+			_, _, _, _, _, err := gradeRuns(context.Background(), test.agent, suite, results, Config{Trials: 2, Timeout: time.Second}, t.TempDir())
 			if err == nil || !strings.Contains(err.Error(), test.stage) {
 				t.Fatalf("gradeRuns() error = %v, want incomplete %s", err, test.stage)
 			}
@@ -361,33 +336,43 @@ func TestGradeRunsRejectsIncompleteBatchOutput(t *testing.T) {
 	}
 }
 
-func TestJudgeBatchingRejectsSingleOversizedCaseTrial(t *testing.T) {
+func TestGradeRunsReportsOversizedCasePrompt(t *testing.T) {
 	t.Parallel()
 
-	input := judgeInput{ID: "giant", Trial: 7, Assertions: []string{"correct"}, A: strings.Repeat("a", maxStructuredJudgePromptBytes), B: "b"}
-	_, err := batchStructuredJudgeInputs("grader", graderPrompt, []judgeInput{input}, maxStructuredJudgePromptBytes, func(input judgeInput) (string, int) { return input.ID, input.Trial })
-	if err == nil {
-		t.Fatal("batchStructuredJudgeInputs() accepted an oversized case-trial")
+	item := Case{ID: "oversized", Assertions: []string{"correct"}}
+	results := make([]runResult, 0, 2)
+	for _, variant := range []string{variantWithSkill, variantWithoutSkill} {
+		runDir := filepath.Join(t.TempDir(), variant)
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		results = append(results, runResult{Case: item, Trial: 1, Variant: variant, RunDir: runDir, Artifact: strings.Repeat(variant, 1_000)})
 	}
-	for _, want := range []string{`case "giant"`, "trial 7", "bytes", "budget"} {
+	_, _, _, _, _, err := gradeRuns(context.Background(), &perCaseJudgeHarness{rejectOverBytes: 1_000}, Suite{Kind: harness.TargetSkill, Cases: []Case{item}}, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir())
+	if err == nil {
+		t.Fatal("gradeRuns() accepted an oversized case prompt")
+	}
+	for _, want := range []string{`grader case "oversized"`, "prompt is", "bytes", "input_too_large"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("oversized error %q lacks %q", err, want)
 		}
 	}
 }
 
-func largeBatchingSuite(t *testing.T) (Suite, []runResult) {
+func perCaseJudgeSuite(t *testing.T, trials int) (Suite, []runResult) {
 	t.Helper()
 	cases := []Case{{ID: "one", Assertions: []string{"correct"}}, {ID: "two", Assertions: []string{"correct"}}, {ID: "three", Assertions: []string{"correct"}}}
-	results := make([]runResult, 0, len(cases)*2)
+	results := make([]runResult, 0, len(cases)*trials*2)
 	for _, item := range cases {
-		for _, variant := range []string{variantWithSkill, variantWithoutSkill} {
-			runDir := filepath.Join(t.TempDir(), item.ID, variant)
-			if err := os.MkdirAll(runDir, 0o755); err != nil {
-				t.Fatal(err)
+		for trial := 1; trial <= trials; trial++ {
+			for _, variant := range []string{variantWithSkill, variantWithoutSkill} {
+				runDir := filepath.Join(t.TempDir(), item.ID, variant)
+				if err := os.MkdirAll(runDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				artifact := fmt.Sprintf("%s-%s-%d", variant, item.ID, trial)
+				results = append(results, runResult{Case: item, Trial: trial, Variant: variant, RunDir: runDir, Artifact: artifact})
 			}
-			artifact := variant + "-" + item.ID + "\n" + strings.Repeat("x", 200_000)
-			results = append(results, runResult{Case: item, Trial: 1, Variant: variant, RunDir: runDir, Artifact: artifact})
 		}
 	}
 	return Suite{Kind: harness.TargetSkill, Cases: cases}, results
