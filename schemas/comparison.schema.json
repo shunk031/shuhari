@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shunk031/shuhari/schemas/comparison.schema.json",
+  "title": "Shuhari blind comparison artifact",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "id": { "type": "string", "minLength": 1 },
+    "trial": { "type": "integer", "minimum": 1 },
+    "A": { "type": "string", "minLength": 1 },
+    "B": { "type": "string", "minLength": 1 },
+    "preferred": { "enum": ["A", "B", "tie"] },
+    "preferred_variant": { "type": "string", "minLength": 1 },
+    "reason": { "type": "string", "minLength": 1 }
+  },
+  "required": ["schema_version", "id", "trial", "A", "B", "preferred", "preferred_variant", "reason"],
+  "additionalProperties": false
+}

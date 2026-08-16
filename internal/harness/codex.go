@@ -1,0 +1,786 @@
+package harness
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
+	"strings"
+	"time"
+)
+
+var transientPattern = regexp.MustCompile(`(?i)(?:429|too many requests|timed? ?out|timeout|connection|network|tls|temporar|unavailable|rate.?limit|reset by peer|empty response)`)
+
+type codexHarness struct {
+	executable string
+}
+
+func newCodex(config Config) *codexHarness {
+	executable := config.Executable
+	if executable == "" {
+		executable = "codex"
+	}
+	return &codexHarness{executable: executable}
+}
+
+func (h *codexHarness) Probe(ctx context.Context) (Identity, error) {
+	output, err := exec.CommandContext(ctx, h.executable, "--version").CombinedOutput()
+	if err != nil {
+		return Identity{}, fmt.Errorf("probe codex: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	configPath, err := codexConfigPath()
+	if err != nil {
+		return Identity{}, err
+	}
+	configDigest, err := codexConfigurationDigest(configPath)
+	if err != nil {
+		return Identity{}, err
+	}
+	executableDigest, err := executableDigest(h.executable)
+	if err != nil {
+		return Identity{}, err
+	}
+	return Identity{
+		Agent:             "codex",
+		Version:           strings.TrimSpace(string(output)),
+		ConfigDigest:      configDigest,
+		ExecutableDigest:  executableDigest,
+		EnvironmentDigest: environmentDigest(cleanEnvironment("")),
+	}, nil
+}
+
+func executableDigest(executable string) (string, error) {
+	path, err := exec.LookPath(executable)
+	if err != nil {
+		return "", fmt.Errorf("find Codex executable: %w", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read Codex executable: %w", err)
+	}
+	digest := sha256.Sum256(contents)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func environmentDigest(environment []string) string {
+	entries := append([]string(nil), environment...)
+	sort.Strings(entries)
+	digest := sha256.New()
+	for _, entry := range entries {
+		_, _ = digest.Write([]byte(entry))
+		_, _ = digest.Write([]byte{0})
+	}
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
+func codexConfigPath() (string, error) {
+	root := os.Getenv("CODEX_HOME")
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("find home directory: %w", err)
+		}
+		root = filepath.Join(home, ".codex")
+	}
+	return filepath.Join(root, "config.toml"), nil
+}
+
+func codexConfigurationDigest(path string) (string, error) {
+	contents, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read Codex config: %w", err)
+	}
+	digest := sha256.Sum256(contents)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func (*codexHarness) Capabilities() Capabilities {
+	return Capabilities{Skills: true, Instructions: true, TriggerEvidence: true}
+}
+
+func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error) {
+	if request.WorkDir == "" {
+		return Result{}, errors.New("codex work directory is required")
+	}
+	if request.Timeout <= 0 {
+		return Result{}, errors.New("codex timeout must be positive")
+	}
+	request.Sandbox = EffectiveSandbox(request.Sandbox)
+	if err := ValidateSandbox(request.Sandbox); err != nil {
+		return Result{}, err
+	}
+	if err := os.MkdirAll(request.WorkDir, 0o755); err != nil {
+		return Result{}, fmt.Errorf("create work directory: %w", err)
+	}
+	snapshotRoot, err := secureTemporaryDirectory("shuhari-codex-snapshot-")
+	if err != nil {
+		return Result{}, fmt.Errorf("create work directory snapshot: %w", err)
+	}
+	defer os.RemoveAll(snapshotRoot)
+	snapshot := filepath.Join(snapshotRoot, "workdir")
+	if err := copyTree(request.WorkDir, snapshot); err != nil {
+		return Result{}, fmt.Errorf("snapshot work directory: %w", err)
+	}
+	var last error
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := restoreDirectory(snapshot, request.WorkDir); err != nil {
+			return Result{}, err
+		}
+		result, err := h.runOnce(ctx, request)
+		if err == nil {
+			if strings.TrimSpace(result.Response) == "" {
+				last = fmt.Errorf("%w: codex returned an empty response", ErrTransient)
+				continue
+			}
+			return result, nil
+		}
+		last = err
+		if !errors.Is(err, ErrTransient) {
+			return Result{}, err
+		}
+	}
+	return Result{}, last
+}
+
+func (h *codexHarness) runOnce(parent context.Context, request Request) (Result, error) {
+	if err := ensureGitRepository(request.WorkDir); err != nil {
+		return Result{}, err
+	}
+	if request.Target != nil {
+		if err := installCodexTarget(request.WorkDir, *request.Target); err != nil {
+			return Result{}, err
+		}
+	}
+
+	temporary, err := secureTemporaryDirectory("shuhari-codex-")
+	if err != nil {
+		return Result{}, fmt.Errorf("create codex temporary directory: %w", err)
+	}
+	defer os.RemoveAll(temporary)
+	codexHome := filepath.Join(temporary, "codex-home")
+	if err := initializeCodexHome(codexHome); err != nil {
+		return Result{}, err
+	}
+	if err := writeCodexProfile(codexHome, request); err != nil {
+		return Result{}, err
+	}
+	before, err := workspaceState(request.WorkDir)
+	if err != nil {
+		return Result{}, err
+	}
+
+	args := []string{"--disable", "plugins", "exec"}
+	if request.Model != "" {
+		args = append(args, "--model", request.Model)
+	}
+	if request.ReasoningEffort != "" {
+		value, _ := json.Marshal(request.ReasoningEffort)
+		args = append(args, "-c", "model_reasoning_effort="+string(value))
+	}
+	if override := disabledSkillsOverride(); override != "" {
+		args = append(args, "-c", override)
+	}
+	args = append(args, "--profile", "shuhari", "--ephemeral", "--json")
+	if request.Sandbox == "danger-full-access" {
+		args = append(args, "--sandbox", request.Sandbox)
+	}
+	args = append(args, "--cd", request.WorkDir)
+	if len(request.OutputSchema) > 0 {
+		schemaPath := filepath.Join(temporary, "output-schema.json")
+		if err := os.WriteFile(schemaPath, request.OutputSchema, 0o600); err != nil {
+			return Result{}, fmt.Errorf("write output schema: %w", err)
+		}
+		args = append(args, "--output-schema", schemaPath)
+	}
+	args = append(args, "-")
+
+	ctx, cancel := context.WithTimeout(parent, request.Timeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, h.executable, args...)
+	command.Stdin = strings.NewReader(request.Prompt)
+	command.Env = codexEnvironment(codexHome)
+	started := time.Now()
+	stdout, stderr := bytes.Buffer{}, bytes.Buffer{}
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err = command.Run()
+	duration := time.Since(started)
+	if ctx.Err() == context.DeadlineExceeded {
+		return Result{}, fmt.Errorf("%w: codex timed out after %s", ErrTransient, request.Timeout)
+	}
+	if err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = strings.TrimSpace(stdout.String())
+		}
+		if transientPattern.MatchString(message) {
+			return Result{}, fmt.Errorf("%w: %s", ErrTransient, message)
+		}
+		return Result{}, fmt.Errorf("codex failed: %w: %s", err, message)
+	}
+	after, err := workspaceState(request.WorkDir)
+	if err != nil {
+		return Result{}, err
+	}
+	result, err := parseCodexTrace(stdout.Bytes(), targetOrEmpty(request.Target))
+	if err != nil {
+		return Result{}, err
+	}
+	result.Transcript = append([]byte(nil), stdout.Bytes()...)
+	result.Duration = duration
+	if statesDiffer(before, after) && !containsAction(result.Actions, ActionFileChange) {
+		result.OrderUnknownActions = append(result.OrderUnknownActions, ActionFileChange)
+	}
+	return result, nil
+}
+
+func targetOrEmpty(target *Target) Target {
+	if target == nil {
+		return Target{}
+	}
+	return *target
+}
+
+func parseCodexTrace(trace []byte, target Target) (Result, error) {
+	result := Result{TargetRead: target.Kind == TargetInstructions}
+	skillContents, err := targetSkillContents(target)
+	if err != nil {
+		return Result{}, err
+	}
+	type actionObservation struct {
+		Index  int
+		Action Action
+	}
+	type skillReadObservation struct {
+		Index  int
+		Output string
+	}
+	var skillReadEvents []skillReadObservation
+	var actionEvents []actionObservation
+	lastMessageEvent := -1
+	turnCompleted := false
+	eventIndex := 0
+	scanner := bufio.NewScanner(bytes.NewReader(trace))
+	buffer := make([]byte, 64*1024)
+	scanner.Buffer(buffer, 4*1024*1024)
+	for scanner.Scan() {
+		var event struct {
+			Type    string          `json:"type"`
+			Item    json.RawMessage `json:"item"`
+			Usage   Usage           `json:"usage"`
+			Message string          `json:"message"`
+			Error   struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return Result{}, fmt.Errorf("decode Codex JSONL event %d: %w", eventIndex+1, err)
+		}
+		eventIndex++
+		switch event.Type {
+		case "turn.completed":
+			result.Usage = event.Usage
+			turnCompleted = true
+		case "turn.failed", "error":
+			message := event.Error.Message
+			if message == "" {
+				message = event.Message
+			}
+			if message == "" {
+				message = "Codex turn failed without an error message"
+			}
+			return Result{}, errors.New(message)
+		case "item.started", "item.updated", "item.completed":
+			var item struct {
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				Command  string `json:"command"`
+				Query    string `json:"query"`
+				Status   string `json:"status"`
+				ExitCode *int   `json:"exit_code"`
+				Output   string `json:"aggregated_output"`
+			}
+			if err := json.Unmarshal(event.Item, &item); err != nil {
+				return Result{}, fmt.Errorf("decode Codex item event %d: %w", eventIndex, err)
+			}
+			switch item.Type {
+			case "agent_message":
+				if event.Type == "item.completed" && item.Text != "" {
+					result.Response = item.Text
+					lastMessageEvent = eventIndex
+				}
+			case "file_change":
+				if event.Type == "item.completed" && item.Status == "completed" {
+					actionEvents = append(actionEvents, actionObservation{Index: eventIndex, Action: ActionFileChange})
+				}
+			case "web_search":
+				if event.Type == "item.completed" && (item.Status == "" || item.Status == "completed") {
+					if strings.Contains(strings.ToLower(item.Query), "github") {
+						actionEvents = append(actionEvents, actionObservation{Index: eventIndex, Action: ActionGitHubSearch})
+					} else {
+						actionEvents = append(actionEvents, actionObservation{Index: eventIndex, Action: ActionWebSearch})
+					}
+				}
+			case "command_execution":
+				if event.Type != "item.completed" || item.Status != "completed" || (item.ExitCode != nil && *item.ExitCode != 0) {
+					continue
+				}
+				if target.Kind == TargetSkill && skillContents != "" && commandReferencesSkill(item.Command, target.Name) {
+					skillReadEvents = append(skillReadEvents, skillReadObservation{Index: eventIndex, Output: item.Output})
+				}
+				for _, action := range classifyCommand(item.Command) {
+					actionEvents = append(actionEvents, actionObservation{Index: eventIndex, Action: action})
+				}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return Result{}, fmt.Errorf("scan codex trace: %w", err)
+	}
+	if !turnCompleted {
+		return Result{}, errors.New("Codex trace ended without turn.completed")
+	}
+	if target.Kind == TargetSkill && lastMessageEvent >= 0 {
+		coverage := newSkillCoverage(skillContents)
+		for _, observation := range skillReadEvents {
+			if observation.Index < lastMessageEvent {
+				coverage.observe(observation.Output)
+			}
+		}
+		result.TargetRead = coverage.ratio() >= skillReadCoverageThreshold
+	}
+	for _, observation := range actionEvents {
+		if lastMessageEvent < 0 || observation.Index < lastMessageEvent {
+			result.Actions = append(result.Actions, observation.Action)
+		}
+	}
+	return result, nil
+}
+
+const (
+	skillReadCoverageThreshold = 0.90
+	skillEvidenceChunkBytes    = 128
+)
+
+type skillCoverage struct {
+	chunks  []string
+	covered []bool
+	total   int
+	read    int
+}
+
+func newSkillCoverage(contents string) *skillCoverage {
+	coverage := &skillCoverage{}
+	for _, line := range strings.SplitAfter(contents, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		for len(line) > skillEvidenceChunkBytes {
+			coverage.chunks = append(coverage.chunks, line[:skillEvidenceChunkBytes])
+			coverage.total += skillEvidenceChunkBytes
+			line = line[skillEvidenceChunkBytes:]
+		}
+		if line != "" {
+			coverage.chunks = append(coverage.chunks, line)
+			coverage.total += len(line)
+		}
+	}
+	coverage.covered = make([]bool, len(coverage.chunks))
+	return coverage
+}
+
+func (coverage *skillCoverage) observe(output string) {
+	for index, chunk := range coverage.chunks {
+		if !coverage.covered[index] && strings.Contains(output, chunk) {
+			coverage.covered[index] = true
+			coverage.read += len(chunk)
+		}
+	}
+}
+
+func (coverage *skillCoverage) ratio() float64 {
+	if coverage.total == 0 {
+		return 0
+	}
+	return float64(coverage.read) / float64(coverage.total)
+}
+
+func commandReferencesSkill(command, skillName string) bool {
+	normalized := filepath.ToSlash(command)
+	directory := filepath.ToSlash(filepath.Join(".agents", "skills", skillName))
+	return strings.Contains(normalized, directory+"/SKILL.md") ||
+		(strings.Contains(normalized, directory) && strings.Contains(normalized, "SKILL.md"))
+}
+
+var (
+	githubCLICommand = regexp.MustCompile(`(?i)\bgh\s+(?:api|browse|repo|search)\b`)
+	githubURLCommand = regexp.MustCompile(`(?i)\b(?:git\s+(?:clone|fetch)|curl|wget)\b.*(?:github\.com|githubusercontent\.com)`)
+	webCommand       = regexp.MustCompile(`(?i)\b(?:curl|wget)\b.*https?://`)
+)
+
+func targetSkillContents(target Target) (string, error) {
+	if target.Kind != TargetSkill {
+		return "", nil
+	}
+	contents, err := os.ReadFile(filepath.Join(target.SourcePath, "SKILL.md"))
+	if err != nil {
+		return "", fmt.Errorf("read target skill evidence: %w", err)
+	}
+	return string(contents), nil
+}
+
+func classifyCommand(command string) []Action {
+	if githubCLICommand.MatchString(command) || githubURLCommand.MatchString(command) {
+		return []Action{ActionGitHubSearch}
+	}
+	if webCommand.MatchString(command) {
+		return []Action{ActionWebSearch}
+	}
+	return nil
+}
+
+func installCodexTarget(workDir string, target Target) error {
+	switch target.Kind {
+	case TargetSkill:
+		destination := filepath.Join(workDir, ".agents", "skills", target.Name)
+		if err := copyTree(target.SourcePath, destination); err != nil {
+			return fmt.Errorf("install skill: %w", err)
+		}
+	case TargetInstructions:
+		contents, err := os.ReadFile(target.SourcePath)
+		if err != nil {
+			return fmt.Errorf("read instructions: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(workDir, "AGENTS.md"), contents, 0o644); err != nil {
+			return fmt.Errorf("install instructions: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported target kind %q", target.Kind)
+	}
+	return nil
+}
+
+func copyTree(source, destination string) error {
+	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, relative)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink is not supported: %s", path)
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, contents, info.Mode().Perm())
+	})
+}
+
+func restoreDirectory(snapshot, destination string) error {
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		return fmt.Errorf("read work directory before retry: %w", err)
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(destination, entry.Name())); err != nil {
+			return fmt.Errorf("reset work directory before retry: %w", err)
+		}
+	}
+	if err := copyTree(snapshot, destination); err != nil {
+		return fmt.Errorf("restore work directory before retry: %w", err)
+	}
+	return nil
+}
+
+func ensureGitRepository(path string) error {
+	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+		return nil
+	}
+	command := exec.Command("git", "init", "-q", path)
+	command.Env = cleanEnvironment("")
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("initialize temporary git repository: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func initializeCodexHome(destination string) error {
+	if err := os.MkdirAll(destination, 0o700); err != nil {
+		return fmt.Errorf("create codex home: %w", err)
+	}
+	source, err := sourceCodexHome()
+	if err != nil {
+		return err
+	}
+	for _, name := range []string{"config.toml", "auth.json"} {
+		from := filepath.Join(source, name)
+		_, err := os.Stat(from)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect codex %s: %w", name, err)
+		}
+		contents, err := os.ReadFile(from)
+		if err != nil {
+			return fmt.Errorf("read codex %s: %w", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(destination, name), contents, 0o600); err != nil {
+			return fmt.Errorf("copy codex %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func sourceCodexHome() (string, error) {
+	if source := os.Getenv("CODEX_HOME"); source != "" {
+		return source, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("find home directory: %w", err)
+	}
+	return filepath.Join(home, ".codex"), nil
+}
+
+func secureTemporaryDirectory(pattern string) (string, error) {
+	directory, err := os.MkdirTemp("", pattern)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(directory, 0o700); err != nil {
+		_ = os.RemoveAll(directory)
+		return "", err
+	}
+	return directory, nil
+}
+
+func writeCodexProfile(codexHome string, request Request) error {
+	commandHome := filepath.Join(request.WorkDir, ".shuhari", "home")
+	commandTmp := filepath.Join(request.WorkDir, ".shuhari", "tmp")
+	for _, path := range []string{commandHome, commandTmp} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return fmt.Errorf("create isolated command directory: %w", err)
+		}
+	}
+	var builder strings.Builder
+	if request.Sandbox != "danger-full-access" {
+		builder.WriteString("default_permissions = \"shuhari-eval\"\n\n")
+	}
+	builder.WriteString("[shell_environment_policy]\ninherit = \"none\"\nignore_default_excludes = false\n\n")
+	builder.WriteString("[shell_environment_policy.set]\n")
+	builder.WriteString("CODEX_HOME = \"\"\n")
+	fmt.Fprintf(&builder, "HOME = %s\n", tomlString(commandHome))
+	commandPath, commandTools := isolatedCommandPath()
+	fmt.Fprintf(&builder, "PATH = %s\n", tomlString(commandPath))
+	fmt.Fprintf(&builder, "TMPDIR = %s\n", tomlString(commandTmp))
+	builder.WriteString("LANG = \"C.UTF-8\"\n")
+	if request.Sandbox != "danger-full-access" {
+		access := "write"
+		if request.Sandbox == "read-only" {
+			access = "read"
+		} else if request.Sandbox != "workspace-write" {
+			return fmt.Errorf("unsupported Codex sandbox %q", request.Sandbox)
+		}
+		builder.WriteString("\n[permissions.shuhari-eval]\ndescription = \"Shuhari isolated evaluation\"\n\n")
+		builder.WriteString("[permissions.shuhari-eval.filesystem]\n\":minimal\" = \"read\"\n")
+		fmt.Fprintf(&builder, "%s = \"deny\"\n", tomlString(codexHome))
+		if source, err := sourceCodexHome(); err == nil {
+			fmt.Fprintf(&builder, "%s = \"deny\"\n", tomlString(source))
+		}
+		for _, tool := range commandTools {
+			fmt.Fprintf(&builder, "%s = \"read\"\n", tomlString(tool))
+		}
+		builder.WriteString("\n[permissions.shuhari-eval.filesystem.\":workspace_roots\"]\n")
+		fmt.Fprintf(&builder, "\".\" = %s\n", tomlString(access))
+		builder.WriteString("\n[permissions.shuhari-eval.network]\n")
+		fmt.Fprintf(&builder, "enabled = %t\n", request.Network)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "shuhari.config.toml"), []byte(builder.String()), 0o600); err != nil {
+		return fmt.Errorf("write isolated Codex profile: %w", err)
+	}
+	return nil
+}
+
+func tomlString(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func isolatedCommandPath() (string, []string) {
+	if runtime.GOOS == "windows" {
+		return `C:\Windows\System32;C:\Windows`, nil
+	}
+	directories := []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"}
+	var tools []string
+	if path, err := exec.LookPath("gh"); err == nil {
+		directory := filepath.Dir(path)
+		found := false
+		for _, existing := range directories {
+			if existing == directory {
+				found = true
+				break
+			}
+		}
+		if !found {
+			directories = append(directories, directory)
+			tools = append(tools, path)
+		}
+	}
+	return strings.Join(directories, string(os.PathListSeparator)), tools
+}
+
+type workspaceFileState struct {
+	Mode   fs.FileMode
+	Digest string
+}
+
+func workspaceState(root string) (map[string]workspaceFileState, error) {
+	state := map[string]workspaceFileState{}
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() && (relative == ".git" || relative == ".shuhari") {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() || relative == "." {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		var contents []byte
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			contents = []byte(target)
+		} else if info.Mode().IsRegular() {
+			contents, err = os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+		}
+		digest := sha256.Sum256(contents)
+		state[filepath.ToSlash(relative)] = workspaceFileState{Mode: info.Mode(), Digest: hex.EncodeToString(digest[:])}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("snapshot evaluated workspace state: %w", err)
+	}
+	return state, nil
+}
+
+func statesDiffer(before, after map[string]workspaceFileState) bool {
+	if len(before) != len(after) {
+		return true
+	}
+	for path, state := range before {
+		if after[path] != state {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAction(actions []Action, expected Action) bool {
+	for _, action := range actions {
+		if action == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func disabledSkillsOverride() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	var paths []string
+	for _, root := range []string{filepath.Join(home, ".agents", "skills"), filepath.Join(home, ".codex", "skills")} {
+		matches, _ := filepath.Glob(filepath.Join(root, "*", "SKILL.md"))
+		paths = append(paths, matches...)
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	sort.Strings(paths)
+	entries := make([]string, 0, len(paths))
+	for _, path := range paths {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			continue
+		}
+		encoded, _ := json.Marshal(absolute)
+		entries = append(entries, "{path="+string(encoded)+",enabled=false}")
+	}
+	return "skills.config=[" + strings.Join(entries, ",") + "]"
+}
+
+func codexEnvironment(codexHome string) []string {
+	return cleanEnvironment(codexHome)
+}
+
+func cleanEnvironment(codexHome string) []string {
+	result := make([]string, 0, 32)
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !allowedEnvironmentVariable(name) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	if codexHome != "" {
+		result = append(result, "CODEX_HOME="+codexHome)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func allowedEnvironmentVariable(name string) bool {
+	if strings.HasPrefix(name, "LC_") {
+		return true
+	}
+	switch name {
+	case "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP", "LANG", "LANGUAGE", "TERM", "COLORTERM", "TZ",
+		"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy":
+		return true
+	default:
+		return false
+	}
+}
