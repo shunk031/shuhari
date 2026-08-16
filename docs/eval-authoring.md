@@ -1,0 +1,21 @@
+# Eval Authoring
+
+Write cases that isolate one observable behavior and provide every input they need.
+
+## Trigger cases
+
+- Positive cases use realistic, in-domain prompts that should lead the agent to consult the skill; a prompt outside its trigger domain measures nothing.
+- A `should_trigger: false` case measures selection frequency, and the default policy judges that frequency by trial majority; guard harmful application with assertions in a paired eval case.
+- Negative controls are near-misses that share the skill's keywords or concepts; an obviously irrelevant prompt tests nothing.
+
+## Evaluation cases
+
+- Make each scenario self-contained: supply working material through `files` fixtures and never assume a populated checkout.
+- Put one requirement in each assertion, and judge produced behavior or artifacts rather than the presence or absence of literal prose.
+- Do not require long verbatim tokens such as full hashes or URLs; give the prompt a short form when exact transcription is not the behavior under test.
+- To test failure handling or another conditional policy, ask what happens under that condition or make the condition occur; do not require recitation of an unobserved counterfactual.
+- Write each assertion so its text fully determines the intended judgment; if graders repeatedly infer a stricter requirement, fix the assertion.
+
+## Evidence
+
+- Judges cite what they read: formatting-normalized verbatim evidence is `strong`, grounded paraphrases are accepted with an annotation, and ungrounded evidence fails the run; see the [grading contract](architecture.md#evaluation-flow).
