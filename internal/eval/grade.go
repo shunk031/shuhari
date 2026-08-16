@@ -182,17 +182,29 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 	entries := map[string]judgeEntry{}
 	for _, item := range inputs {
 		graderInputs := []judgeInput{item.Grader}
-		response, err := runStructuredJudge(ctx, agent, graderPrompt, graderInputs, graderSchema(), config)
+		var output judgeOutput
+		var trialEntries map[string]judgeEntry
+		response, err := runValidatedStructuredJudge(ctx, agent, graderPrompt, graderInputs, graderSchema(), config, func(response string) error {
+			output = judgeOutput{}
+			if err := json.Unmarshal([]byte(response), &output); err != nil {
+				return fmt.Errorf("decode response: %w", err)
+			}
+			var err error
+			trialEntries, err = validateGraderEntries(output, graderInputs)
+			if err != nil {
+				return err
+			}
+			entry := trialEntries[caseTrialKey(item.ID, item.Trial)]
+			if _, err := buildGrading(item.Grader.Assertions, entry.AAssertionResults, item.Grader.A); err != nil {
+				return fmt.Errorf("validate A evidence: %w", err)
+			}
+			if _, err := buildGrading(item.Grader.Assertions, entry.BAssertionResults, item.Grader.B); err != nil {
+				return fmt.Errorf("validate B evidence: %w", err)
+			}
+			return nil
+		})
 		if err != nil {
 			return nil, response, fmt.Errorf("grader case %q trial %d: %w", item.ID, item.Trial, err)
-		}
-		var output judgeOutput
-		if err := json.Unmarshal([]byte(response), &output); err != nil {
-			return nil, response, fmt.Errorf("decode grader case %q trial %d response: %w", item.ID, item.Trial, err)
-		}
-		trialEntries, err := validateGraderEntries(output, graderInputs)
-		if err != nil {
-			return nil, response, fmt.Errorf("validate grader case %q trial %d: %w", item.ID, item.Trial, err)
 		}
 		for key, entry := range trialEntries {
 			entries[key] = entry
@@ -211,17 +223,19 @@ func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs [
 	entries := map[string]comparatorEntry{}
 	for _, item := range inputs {
 		comparatorInputs := []comparatorInput{item.Comparator}
-		response, err := runStructuredJudge(ctx, agent, comparatorPrompt, comparatorInputs, comparatorSchema(), config)
+		var output comparatorOutput
+		var trialEntries map[string]comparatorEntry
+		response, err := runValidatedStructuredJudge(ctx, agent, comparatorPrompt, comparatorInputs, comparatorSchema(), config, func(response string) error {
+			output = comparatorOutput{}
+			if err := json.Unmarshal([]byte(response), &output); err != nil {
+				return fmt.Errorf("decode response: %w", err)
+			}
+			var err error
+			trialEntries, err = validateComparatorEntries(output, comparatorInputs)
+			return err
+		})
 		if err != nil {
 			return nil, response, fmt.Errorf("comparator case %q trial %d: %w", item.ID, item.Trial, err)
-		}
-		var output comparatorOutput
-		if err := json.Unmarshal([]byte(response), &output); err != nil {
-			return nil, response, fmt.Errorf("decode comparator case %q trial %d response: %w", item.ID, item.Trial, err)
-		}
-		trialEntries, err := validateComparatorEntries(output, comparatorInputs)
-		if err != nil {
-			return nil, response, fmt.Errorf("validate comparator case %q trial %d: %w", item.ID, item.Trial, err)
 		}
 		for key, entry := range trialEntries {
 			entries[key] = entry
@@ -233,6 +247,27 @@ func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs [
 		return nil, "", fmt.Errorf("encode comparator response: %w", err)
 	}
 	return entries, string(encoded), nil
+}
+
+func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, validate func(string) error) (string, error) {
+	var response string
+	var validationErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		attemptInstructions := instructions
+		if validationErr != nil {
+			attemptInstructions = strings.TrimSpace(instructions) + "\n\nThe previous response failed validation. Return a corrected response for the original input.\nValidation error: " + validationErr.Error()
+		}
+		var err error
+		response, err = runStructuredJudge(ctx, agent, attemptInstructions, input, schema, config)
+		if err != nil {
+			return response, err
+		}
+		validationErr = validate(response)
+		if validationErr == nil {
+			return response, nil
+		}
+	}
+	return response, validationErr
 }
 
 func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config) (string, error) {
@@ -352,13 +387,49 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 }
 
 func evidenceQuotesArtifact(evidence, artifact string) bool {
+	normalizedArtifact := normalizeEvidenceText(artifact)
 	for _, observation := range quotedObservations(evidence) {
-		quoted := strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\"`, `"`).Replace(observation)
-		if strings.TrimSpace(quoted) != "" && strings.Contains(artifact, quoted) {
+		quoted := normalizeEvidenceText(decodeQuotedObservation(observation))
+		if quoted != "" && strings.Contains(normalizedArtifact, quoted) {
 			return true
 		}
 	}
 	return false
+}
+
+func decodeQuotedObservation(value string) string {
+	var decoded strings.Builder
+	for index := 0; index < len(value); index++ {
+		if value[index] != '\\' || index+1 == len(value) {
+			decoded.WriteByte(value[index])
+			continue
+		}
+		if strings.HasPrefix(value[index:], `\\\n`) {
+			decoded.WriteByte('\\')
+			decoded.WriteByte('\n')
+			index += 3
+			continue
+		}
+		switch value[index+1] {
+		case 'n':
+			decoded.WriteByte('\n')
+		case 't':
+			decoded.WriteByte('\t')
+		case '"':
+			decoded.WriteByte('"')
+		default:
+			decoded.WriteByte(value[index])
+			continue
+		}
+		index++
+	}
+	return decoded.String()
+}
+
+func normalizeEvidenceText(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\\\n", " ")
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func quotedObservations(evidence string) []string {
