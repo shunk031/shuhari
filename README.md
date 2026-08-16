@@ -139,7 +139,7 @@ Exit status: `0` pass, `1` evaluation or trigger failure, `2` invalid input or e
 
 Runs are sandboxed and offline by default; pass `--network` for cases that need it. Successful runs are cached (`--no-cache` forces a fresh run); failures keep their evidence and are never cached.
 
-Credential handling and the `required_actions` contract are documented in the [architecture contract](docs/architecture.md#credential-boundary). If the agent's sandbox cannot start but the environment is already isolated (a CI runner or container), disable it explicitly — Shuhari refuses this without the acknowledgement and labels the verdict:
+Credential handling is documented in the [credential boundary](docs/architecture.md#credential-boundary) and the `required_actions` contract in [action evidence](docs/architecture.md#action-evidence). If the agent's sandbox cannot start but the environment is already isolated (a CI runner or container), disable it explicitly — Shuhari refuses this without the acknowledgement and labels the verdict:
 
 ```sh
 SHUHARI_SANDBOX=danger-full-access \
