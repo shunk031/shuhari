@@ -153,15 +153,62 @@ func TestBuildGradingRejectsBlankOrUnsupportedEvidence(t *testing.T) {
 	if err != nil || grading.Summary.Passed != 1 {
 		t.Fatalf("valid evidence rejected: grading=%#v err=%v", grading, err)
 	}
-	if !evidenceQuotesArtifact(`Excerpt: "first\nsecond"`, "first\nsecond") {
+	if groundEvidence(`Excerpt: "first\nsecond"`, "first\nsecond").Kind != evidenceGroundingStrong {
 		t.Fatal("escaped newline in quoted evidence was not matched to the artifact")
 	}
-	if evidenceQuotesArtifact("Observed `actual output`.", "actual output") {
+	if groundEvidence("Observed `actual output`.", "actual output").Kind != evidenceGroundingHallucination {
 		t.Fatal("backticks were accepted as quotation marks")
 	}
 }
 
-func TestEvidenceQuotesArtifactNormalizesLineWrapping(t *testing.T) {
+func TestBuildGradingAcceptsGroundedParaphrase(t *testing.T) {
+	t.Parallel()
+
+	artifact := "Do not paste a personal access token into a file, shell profile, dotfile, or persistent environment variable."
+	grading, err := buildGrading(
+		[]string{"credentials are not persisted"},
+		[]AssertionResult{{
+			Text:     "credentials are not persisted",
+			Passed:   true,
+			Evidence: `Observed "Do not put a PAT in a dotfile or persistent environment variable."`,
+		}},
+		artifact,
+	)
+	if err != nil {
+		t.Fatalf("buildGrading() rejected grounded paraphrase: %v", err)
+	}
+	result := grading.AssertionResults[0]
+	if result.EvidenceGrounding != evidenceGroundingParaphrase {
+		t.Fatalf("evidence grounding = %q, want %q", result.EvidenceGrounding, evidenceGroundingParaphrase)
+	}
+	if result.EvidenceGroundingScore != 0.75 {
+		t.Fatalf("evidence grounding score = %v, want 0.75", result.EvidenceGroundingScore)
+	}
+	wantSpan := strings.TrimSuffix(artifact, ".")
+	if result.EvidenceGroundingSpan != wantSpan {
+		t.Fatalf("evidence grounding span = %q, want %q", result.EvidenceGroundingSpan, wantSpan)
+	}
+}
+
+func TestBuildGradingRejectsFabricatedParaphrase(t *testing.T) {
+	t.Parallel()
+
+	artifact := "Do not paste a personal access token into a file, shell profile, dotfile, or persistent environment variable."
+	_, err := buildGrading(
+		[]string{"credentials are not persisted"},
+		[]AssertionResult{{
+			Text:     "credentials are not persisted",
+			Passed:   true,
+			Evidence: `Observed "Rotate every leaked credential within five minutes and notify the security team."`,
+		}},
+		artifact,
+	)
+	if err == nil {
+		t.Fatal("buildGrading() accepted fabricated artifact evidence")
+	}
+}
+
+func TestGroundEvidenceNormalizesLineWrapping(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -217,8 +264,57 @@ func TestEvidenceQuotesArtifactNormalizesLineWrapping(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := evidenceQuotesArtifact(test.evidence, test.artifact); got != test.want {
-				t.Fatalf("evidenceQuotesArtifact() = %v, want %v", got, test.want)
+			got := groundEvidence(test.evidence, test.artifact).Kind != evidenceGroundingHallucination
+			if got != test.want {
+				t.Fatalf("groundEvidence() accepted = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildGradingKeepsStrongGroundingForNormalizedQuotes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		artifact string
+		evidence string
+	}{
+		{
+			name:     "inline code backticks",
+			artifact: "The report records `tool --verify` as successful.",
+			evidence: `Observed "The report records tool --verify as successful."`,
+		},
+		{
+			name:     "fenced code backticks",
+			artifact: "Verification:\n```\nremote ref verified\n```",
+			evidence: `Observed "Verification: remote ref verified".`,
+		},
+		{
+			name: "line continuation",
+			artifact: `tool -c user=automation \
+    -c email=automation@example.test commit`,
+			evidence: `Observed "tool -c user=automation \\\n  -c email=automation@example.test commit".`,
+		},
+		{
+			name:     "whitespace wrapping",
+			artifact: "The client stores the credential in the system\ncredential store when available.",
+			evidence: `Observed "The client stores the credential in the system credential store when available."`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			grading, err := buildGrading(
+				[]string{"grounded"},
+				[]AssertionResult{{Text: "grounded", Passed: true, Evidence: test.evidence}},
+				test.artifact,
+			)
+			if err != nil {
+				t.Fatalf("buildGrading() error = %v", err)
+			}
+			result := grading.AssertionResults[0]
+			if result.EvidenceGrounding != evidenceGroundingStrong || result.EvidenceGroundingScore != 1 {
+				t.Fatalf("grounding = %q score %v, want strong score 1", result.EvidenceGrounding, result.EvidenceGroundingScore)
 			}
 		})
 	}
@@ -536,7 +632,7 @@ func TestJudgeValidationRetryPromptContainsOnlyContractError(t *testing.T) {
 		t.Fatalf("gradeRuns() error = %v", err)
 	}
 	retryPrompt := agent.requests[1].Prompt
-	if !strings.Contains(strings.ToLower(retryPrompt), "validation error") || !strings.Contains(retryPrompt, "lacks a quoted observation") {
+	if !strings.Contains(strings.ToLower(retryPrompt), "validation error") || !strings.Contains(retryPrompt, "lacks grounded evidence") {
 		t.Fatalf("retry prompt lacks contract error: %s", retryPrompt)
 	}
 	for _, forbidden := range []string{"fabricated-answer-marker", `"passed":true`, `"preferred":"A"`} {

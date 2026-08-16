@@ -59,6 +59,8 @@ There is no public Go SDK or dynamic plugin registry. A new agent is added as a 
 6. Candidate assertion results are aggregated per case. The default is majority; `--strict-all-trials` requires all trials. Required actions always require every trial. The comparison also requires candidate wins to be at least baseline wins.
 7. `benchmark.json` records candidate-minus-baseline differences and assertion audit categories. A passing result enters the cache; a failure retains evidence but never enters the cache.
 
+Passing evidence is `strong` when its normalized quote occurs in the artifact. Otherwise, a quote of at least eight tokens is a grounded `paraphrase` when its token LCS recall is at least 0.75 within an artifact window no longer than twice the quote; `grading.json` records the score and best-matching normalized artifact span. Evidence below either bar is a `hallucination` and fails closed.
+
 Trigger checks use the same isolation and bounded scheduling, but not the output grader. Read evidence accumulates only from successful pre-response commands that reference the target `SKILL.md`. The body is split into nonblank, byte-weighted chunks of at most 128 bytes; a read requires at least 90% cumulative coverage. This tolerates a truncated tail while rejecting metadata-only commands and materially incomplete reads. Positive cases use majority by default, while negative controls always require zero reads.
 
 ## Credential boundary
