@@ -34,17 +34,40 @@ func TestCodexResolveSecurityRequiresExplicitUnsandboxedNetworkAndAcknowledgemen
 	agent := newCodex(Config{})
 	policy := SecurityPolicy{Level: SandboxUnsandboxed, Network: true}
 
-	if _, err := agent.ResolveSecurity(context.Background(), policy); err == nil {
+	_, err := agent.ResolveSecurity(context.Background(), policy)
+	if err == nil {
 		t.Fatal("ResolveSecurity() accepted unsandboxed without acknowledgement")
+	}
+	if !errors.Is(err, ErrUnsupportedSecurityPolicy) {
+		t.Fatalf("missing acknowledgement error = %v, want ErrUnsupportedSecurityPolicy", err)
 	}
 	t.Setenv(NoCredentialBoundaryAcknowledgementEnv, "1")
 	policy.Network = false
-	_, err := agent.ResolveSecurity(context.Background(), policy)
+	_, err = agent.ResolveSecurity(context.Background(), policy)
 	if err == nil {
 		t.Fatal("ResolveSecurity() accepted unsandboxed with network=false")
 	}
 	if !errors.Is(err, ErrUnsupportedSecurityPolicy) {
 		t.Fatalf("error = %v, want ErrUnsupportedSecurityPolicy", err)
+	}
+}
+
+func TestValidateSecurityResolutionRejectsMalformedPolicyDigest(t *testing.T) {
+	t.Parallel()
+
+	policy := SecurityPolicy{Level: SandboxIsolated, Network: false}
+	resolution := SecurityResolution{
+		SandboxLevel:       SandboxIsolated,
+		NetworkAccess:      NetworkDenied,
+		CredentialBoundary: CredentialBoundaryEnforced,
+		Adapter: AdapterSecurity{
+			Name:         "fake",
+			NativeMode:   "fake-isolated",
+			PolicyDigest: "x",
+		},
+	}
+	if err := ValidateSecurityResolution(policy, resolution); err == nil {
+		t.Fatal("ValidateSecurityResolution() accepted a digest outside the artifact schema")
 	}
 }
 

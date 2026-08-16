@@ -828,11 +828,41 @@ exit 1
 	}
 }
 
-func TestEffectiveSandboxLevelResolvesEnvironmentOverride(t *testing.T) {
+func TestEffectiveSandboxLevelDoesNotReadEnvironment(t *testing.T) {
 	t.Setenv("SHUHARI_SANDBOX", "read-only")
 	got, err := EffectiveSandboxLevel("isolated")
-	if err != nil || got != SandboxReadOnly {
+	if err != nil || got != SandboxIsolated {
 		t.Fatalf("EffectiveSandboxLevel() = %q, %v", got, err)
+	}
+}
+
+func TestCodexProbeRejectsUnavailableProtectedSandbox(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "codex")
+	contents := `#!/bin/sh
+if test "$1" = "--version"; then
+  printf '%s\n' 'codex-cli test'
+  exit 0
+fi
+printf '%s\n' 'failed to create user namespace' >&2
+exit 1
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	codexHome := filepath.Join(root, "codex-home")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	agent := newCodex(Config{Executable: script})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+	_, err := agent.Probe(context.Background(), security)
+	if err == nil || !errors.Is(err, ErrUnsupportedSecurityPolicy) {
+		t.Fatalf("Probe() error = %v, want ErrUnsupportedSecurityPolicy", err)
+	}
+	if !strings.Contains(err.Error(), "unsandboxed") || !strings.Contains(err.Error(), "isolated runner") {
+		t.Fatalf("Probe() error is not actionable: %v", err)
 	}
 }
 

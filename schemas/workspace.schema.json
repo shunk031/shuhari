@@ -13,6 +13,7 @@
     "agent_identity": { "type": "object" },
     "config": { "type": "object" },
     "security": { "$ref": "#/$defs/security" },
+    "judge_security": { "$ref": "#/$defs/security" },
     "grader_prompt_digest": { "type": "string", "minLength": 1 },
     "comparator_prompt_digest": { "type": "string", "minLength": 1 }
   },

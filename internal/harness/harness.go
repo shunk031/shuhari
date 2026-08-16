@@ -104,7 +104,7 @@ type Capabilities struct {
 }
 
 type Harness interface {
-	Probe(context.Context) (Identity, error)
+	Probe(context.Context, ...SecurityResolution) (Identity, error)
 	Capabilities() Capabilities
 	ResolveSecurity(context.Context, SecurityPolicy) (SecurityResolution, error)
 	Run(context.Context, Request) (Result, error)

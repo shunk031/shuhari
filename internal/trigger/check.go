@@ -21,6 +21,7 @@ import (
 	"github.com/shunk031/shuhari/internal/cache"
 	"github.com/shunk031/shuhari/internal/harness"
 	"github.com/shunk031/shuhari/internal/skill"
+	contracts "github.com/shunk031/shuhari/schemas"
 )
 
 type rawCase struct {
@@ -139,7 +140,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if !agent.Capabilities().TriggerEvidence {
 		return Report{}, errors.New("selected agent does not expose trigger evidence")
 	}
-	identity, err := agent.Probe(ctx)
+	identity, err := agent.Probe(ctx, security)
 	if err != nil {
 		return Report{}, err
 	}
@@ -176,12 +177,18 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	measurement, runErr := measure(ctx, suite, agent, config, security, iteration)
 	if runErr != nil {
 		summary := triggerVerdict{SchemaVersion: triggerArtifactSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: false, Results: measurement.Results, Error: runErr.Error()}
+		if err := contracts.Validate("trigger", summary); err != nil {
+			return Report{Workspace: iteration}, err
+		}
 		_ = writeJSON(filepath.Join(iteration, "trigger.json"), summary)
 		return Report{Workspace: iteration}, runErr
 	}
 	reasons := ApplyPolicy(suite, measurement, Policy{Trials: config.Trials, StrictAllTrials: config.StrictAllTrials})
 	report := Report{Passed: len(reasons) == 0, Workspace: iteration, Reasons: reasons}
 	summary := triggerVerdict{SchemaVersion: triggerArtifactSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: report.Passed, Results: measurement.Results, Reasons: reasons}
+	if err := contracts.Validate("trigger", summary); err != nil {
+		return report, err
+	}
 	if err := writeJSON(filepath.Join(iteration, "trigger.json"), summary); err != nil {
 		return report, err
 	}
@@ -439,7 +446,7 @@ func writeTriggerManifest(iteration string, suite Suite, suiteDigest, runnerDige
 	if err := harness.ValidateSecurityResolution(policy, security); err != nil {
 		return fmt.Errorf("validate manifest security: %w", err)
 	}
-	return writeJSON(filepath.Join(iteration, "manifest.json"), struct {
+	manifest := struct {
 		SchemaVersion string                     `json:"schema_version"`
 		CreatedAt     time.Time                  `json:"created_at"`
 		TargetKind    harness.TargetKind         `json:"target_kind"`
@@ -449,7 +456,11 @@ func writeTriggerManifest(iteration string, suite Suite, suiteDigest, runnerDige
 		AgentIdentity harness.Identity           `json:"agent_identity"`
 		Config        Config                     `json:"config"`
 		Security      harness.SecurityResolution `json:"security"`
-	}{SchemaVersion: triggerManifestSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: harness.TargetSkill, TargetName: suite.SkillName, SuiteDigest: suiteDigest, RunnerDigest: runnerDigest, AgentIdentity: identity, Config: config, Security: security})
+	}{SchemaVersion: triggerManifestSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: harness.TargetSkill, TargetName: suite.SkillName, SuiteDigest: suiteDigest, RunnerDigest: runnerDigest, AgentIdentity: identity, Config: config, Security: security}
+	if err := contracts.Validate("workspace", manifest); err != nil {
+		return err
+	}
+	return writeJSON(filepath.Join(iteration, "manifest.json"), manifest)
 }
 
 func pathWithin(path, root string) bool {

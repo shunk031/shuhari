@@ -38,6 +38,9 @@ func newCheckTriggerCommand(options Options) *cobra.Command {
 		Short: "Check positive and negative trigger cases",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			if err := resolveSecurityFlags(command, &flags.sandbox, flags.network); err != nil {
+				return err
+			}
 			suite, err := trigger.LoadSuite(args[0], flags.casesPath)
 			if err != nil {
 				return err

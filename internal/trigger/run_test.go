@@ -15,13 +15,14 @@ import (
 )
 
 type triggerHarness struct {
-	mu       sync.Mutex
-	runs     int
-	attempts harness.AttemptEvidence
-	requests []harness.Request
+	mu              sync.Mutex
+	runs            int
+	attempts        harness.AttemptEvidence
+	requests        []harness.Request
+	resolvePolicies []harness.SecurityPolicy
 }
 
-func (*triggerHarness) Probe(context.Context) (harness.Identity, error) {
+func (*triggerHarness) Probe(context.Context, ...harness.SecurityResolution) (harness.Identity, error) {
 	return harness.Identity{Agent: "fake", Version: "1"}, nil
 }
 
@@ -29,7 +30,10 @@ func (*triggerHarness) Capabilities() harness.Capabilities {
 	return harness.Capabilities{Skills: true, TriggerEvidence: true}
 }
 
-func (*triggerHarness) ResolveSecurity(_ context.Context, policy harness.SecurityPolicy) (harness.SecurityResolution, error) {
+func (h *triggerHarness) ResolveSecurity(_ context.Context, policy harness.SecurityPolicy) (harness.SecurityResolution, error) {
+	h.mu.Lock()
+	h.resolvePolicies = append(h.resolvePolicies, policy)
+	h.mu.Unlock()
 	return fakeTriggerSecurityResolution(policy), nil
 }
 
@@ -121,6 +125,9 @@ func TestRunChecksPositiveAndNegativeCases(t *testing.T) {
 	if !report.Passed {
 		t.Fatalf("report = %#v", report)
 	}
+	if len(agent.resolvePolicies) != 1 {
+		t.Fatalf("ResolveSecurity calls = %d, want one trigger resolution", len(agent.resolvePolicies))
+	}
 	if _, err := os.Stat(filepath.Join(report.Workspace, "trigger.json")); err != nil {
 		t.Fatalf("missing trigger summary: %v", err)
 	}
@@ -163,9 +170,7 @@ func TestRunChecksPositiveAndNegativeCases(t *testing.T) {
 	}
 }
 
-func TestRunCacheIncludesEffectiveSandboxOverride(t *testing.T) {
-	t.Setenv("SHUHARI_SANDBOX", "")
-
+func TestRunCacheIncludesSandboxLevel(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo")
 	if err := os.MkdirAll(filepath.Join(root, "evals"), 0o755); err != nil {
 		t.Fatal(err)
@@ -187,14 +192,13 @@ func TestRunCacheIncludesEffectiveSandboxOverride(t *testing.T) {
 	if _, err := Run(context.Background(), suite, agent, store, config); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SHUHARI_SANDBOX", "read-only")
-	t.Setenv(harness.NoCredentialBoundaryAcknowledgementEnv, "1")
+	config.SandboxLevel = "read-only"
 	report, err := Run(context.Background(), suite, agent, store, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.Cached || agent.runs != 4 {
-		t.Fatalf("sandbox override reused stale cache: cached=%v runs=%d", report.Cached, agent.runs)
+		t.Fatalf("sandbox change reused stale cache: cached=%v runs=%d", report.Cached, agent.runs)
 	}
 	summaryContents, err := os.ReadFile(filepath.Join(report.Workspace, "trigger.json"))
 	if err != nil {

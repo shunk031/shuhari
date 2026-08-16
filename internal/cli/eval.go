@@ -43,6 +43,9 @@ func newEvalSkillCommand(options Options) *cobra.Command {
 		Short: "Evaluate an Agent Skill with and without the skill",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			if err := resolveSecurityFlags(command, &flags.sandbox, flags.network); err != nil {
+				return err
+			}
 			paths, err := resolveSkillPaths(args)
 			if err != nil {
 				return err
@@ -102,6 +105,9 @@ func newEvalInstructionsCommand(options Options) *cobra.Command {
 		Short: "Evaluate repository instructions with and without the instructions",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			if err := resolveSecurityFlags(command, &flags.sandbox, flags.network); err != nil {
+				return err
+			}
 			suite, err := eval.LoadInstructionsSuite(args[0], evalPath)
 			if err != nil {
 				return err

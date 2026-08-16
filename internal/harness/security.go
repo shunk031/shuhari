@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 )
 
 type SandboxLevel string
@@ -31,6 +32,8 @@ const (
 const NoCredentialBoundaryAcknowledgementEnv = "SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY"
 
 var ErrUnsupportedSecurityPolicy = errors.New("unsupported security policy")
+
+var policyDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]+$`)
 
 type UnsupportedSecurityPolicyError struct {
 	Adapter string
@@ -73,9 +76,6 @@ func (r SecurityResolution) Policy() SecurityPolicy {
 }
 
 func EffectiveSandboxLevel(requested string) (SandboxLevel, error) {
-	if override := os.Getenv("SHUHARI_SANDBOX"); override != "" {
-		requested = override
-	}
 	if requested == "" {
 		requested = string(SandboxIsolated)
 	}
@@ -104,7 +104,7 @@ func ValidateSecurityPolicy(policy SecurityPolicy) error {
 			return &UnsupportedSecurityPolicyError{Policy: policy, Reason: "network denial cannot be enforced; pass --network=true to acknowledge unrestricted egress"}
 		}
 		if os.Getenv(NoCredentialBoundaryAcknowledgementEnv) != "1" {
-			return fmt.Errorf("unsandboxed has no credential boundary; set %s=1 only inside an isolated runner or container", NoCredentialBoundaryAcknowledgementEnv)
+			return &UnsupportedSecurityPolicyError{Policy: policy, Reason: fmt.Sprintf("no credential boundary; set %s=1 only inside an isolated runner or container", NoCredentialBoundaryAcknowledgementEnv)}
 		}
 	}
 	return nil
@@ -131,8 +131,11 @@ func ValidateSecurityResolution(policy SecurityPolicy, resolution SecurityResolu
 	if resolution.CredentialBoundary != wantBoundary {
 		return fmt.Errorf("invalid security resolution: credential boundary %q does not match required %q", resolution.CredentialBoundary, wantBoundary)
 	}
-	if resolution.Adapter.Name == "" || resolution.Adapter.NativeMode == "" || resolution.Adapter.PolicyDigest == "" {
+	if resolution.Adapter.Name == "" || resolution.Adapter.NativeMode == "" {
 		return errors.New("invalid security resolution: adapter name, native mode, and policy digest are required")
+	}
+	if !policyDigestPattern.MatchString(resolution.Adapter.PolicyDigest) {
+		return errors.New("invalid security resolution: policy digest must match sha256:<lowercase-hex>")
 	}
 	return nil
 }

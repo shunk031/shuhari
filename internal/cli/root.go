@@ -60,6 +60,25 @@ func newHarness(options Options, agentName, executable string) (harness.Harness,
 	return options.HarnessFactory(agentName, harness.Config{Executable: executable})
 }
 
+func resolveSecurityFlags(command *cobra.Command, sandbox *string, network bool) error {
+	requested := *sandbox
+	if !command.Flags().Changed("sandbox") {
+		if override := os.Getenv("SHUHARI_SANDBOX"); override != "" {
+			requested = override
+		}
+	}
+	level, err := harness.EffectiveSandboxLevel(requested)
+	if err != nil {
+		return err
+	}
+	policy := harness.SecurityPolicy{Level: level, Network: network}
+	if err := harness.ValidateSecurityPolicy(policy); err != nil {
+		return err
+	}
+	*sandbox = string(level)
+	return nil
+}
+
 func printReport(command *cobra.Command, name string, passed, cached bool, workspace string, reasons []string) error {
 	status := "passed"
 	if !passed {

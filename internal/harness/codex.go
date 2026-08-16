@@ -50,7 +50,7 @@ func waitForCodexRetry(ctx context.Context, retry int) error {
 	}
 }
 
-func (h *codexHarness) Probe(ctx context.Context) (Identity, error) {
+func (h *codexHarness) Probe(ctx context.Context, securities ...SecurityResolution) (Identity, error) {
 	output, err := exec.CommandContext(ctx, h.executable, "--version").CombinedOutput()
 	if err != nil {
 		return Identity{}, fmt.Errorf("probe codex: %w: %s", err, strings.TrimSpace(string(output)))
@@ -67,6 +67,19 @@ func (h *codexHarness) Probe(ctx context.Context) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
+	seen := map[string]bool{}
+	for _, security := range securities {
+		if err := validateCodexSecurityResolution(security); err != nil {
+			return Identity{}, err
+		}
+		if security.SandboxLevel == SandboxUnsandboxed || seen[security.Adapter.PolicyDigest] {
+			continue
+		}
+		seen[security.Adapter.PolicyDigest] = true
+		if err := h.probeSandbox(ctx, security); err != nil {
+			return Identity{}, err
+		}
+	}
 	return Identity{
 		Agent:             "codex",
 		Version:           strings.TrimSpace(string(output)),
@@ -74,6 +87,45 @@ func (h *codexHarness) Probe(ctx context.Context) (Identity, error) {
 		ExecutableDigest:  executableDigest,
 		EnvironmentDigest: environmentDigest(cleanEnvironment("")),
 	}, nil
+}
+
+func (h *codexHarness) probeSandbox(ctx context.Context, security SecurityResolution) error {
+	temporary, err := secureTemporaryDirectory("shuhari-codex-probe-")
+	if err != nil {
+		return fmt.Errorf("create Codex sandbox preflight directory: %w", err)
+	}
+	defer os.RemoveAll(temporary)
+	workDir := filepath.Join(temporary, "work")
+	codexHome := filepath.Join(temporary, "codex-home")
+	for _, directory := range []string{workDir, codexHome} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			return fmt.Errorf("create Codex sandbox preflight directory: %w", err)
+		}
+	}
+	if err := writeCodexProfile(codexHome, Request{WorkDir: workDir, Security: security}); err != nil {
+		return fmt.Errorf("write Codex sandbox preflight profile: %w", err)
+	}
+	commandArgs := []string{"/bin/true"}
+	if runtime.GOOS == "windows" {
+		commandArgs = []string{"cmd.exe", "/c", "exit", "0"}
+	}
+	args := []string{"sandbox", "--profile", "shuhari", "--permission-profile", "shuhari-eval", "--cd", workDir}
+	args = append(args, commandArgs...)
+	command := exec.CommandContext(ctx, h.executable, args...)
+	command.Env = cleanEnvironment(codexHome)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	reason := strings.TrimSpace(string(output))
+	if reason == "" {
+		reason = err.Error()
+	}
+	return &UnsupportedSecurityPolicyError{
+		Adapter: "codex",
+		Policy:  security.Policy(),
+		Reason:  fmt.Sprintf("native sandbox preflight failed: %s; use unsandboxed with --network=true only inside an isolated runner or container", reason),
+	}
 }
 
 func executableDigest(executable string) (string, error) {
