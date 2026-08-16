@@ -72,6 +72,8 @@ type rawJudgeEvidence struct {
 	Comparator string `json:"comparator"`
 }
 
+const maxStructuredJudgePromptBytes = 900_000
+
 func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results []runResult, config Config, iteration string) ([]gradedRun, int, int, []string, string, error) {
 	byKey := map[string]runResult{}
 	for _, result := range results {
@@ -97,36 +99,29 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 			comparatorInputs = append(comparatorInputs, comparatorInput{ID: item.ID, Trial: trial, Prompt: item.Prompt, ExpectedOutput: item.ExpectedOutput, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B]})
 		}
 	}
-	graderResponse, err := runStructuredJudge(ctx, agent, graderPrompt, graderInputs, graderSchema(), config)
+	graderBatches, err := batchStructuredJudgeInputs("grader", graderPrompt, graderInputs, maxStructuredJudgePromptBytes, func(input judgeInput) (string, int) {
+		return input.ID, input.Trial
+	})
 	if err != nil {
-		persistGradingError(iteration, "grader", graderResponse, "", mappings, err)
-		return nil, 0, 0, nil, graderResponse, err
+		persistGradingError(iteration, "prepare", "", "", mappings, err)
+		return nil, 0, 0, nil, "", err
 	}
-	var grader judgeOutput
-	if err := json.Unmarshal([]byte(graderResponse), &grader); err != nil {
-		err = fmt.Errorf("decode grader response: %w", err)
-		persistGradingError(iteration, "grader", graderResponse, "", mappings, err)
-		return nil, 0, 0, nil, graderResponse, err
+	comparatorBatches, err := batchStructuredJudgeInputs("comparator", comparatorPrompt, comparatorInputs, maxStructuredJudgePromptBytes, func(input comparatorInput) (string, int) {
+		return input.ID, input.Trial
+	})
+	if err != nil {
+		persistGradingError(iteration, "prepare", "", "", mappings, err)
+		return nil, 0, 0, nil, "", err
 	}
-	graderEntries, err := validateGraderEntries(grader, graderInputs)
+
+	graderEntries, graderResponse, err := runGraderBatches(ctx, agent, graderBatches, graderInputs, config)
 	if err != nil {
 		persistGradingError(iteration, "grader", graderResponse, "", mappings, err)
 		return nil, 0, 0, nil, graderResponse, err
 	}
 
-	comparatorResponse, err := runStructuredJudge(ctx, agent, comparatorPrompt, comparatorInputs, comparatorSchema(), config)
+	comparatorEntries, comparatorResponse, err := runComparatorBatches(ctx, agent, comparatorBatches, comparatorInputs, config)
 	rawEvidence, _ := json.Marshal(rawJudgeEvidence{Grader: graderResponse, Comparator: comparatorResponse})
-	if err != nil {
-		persistGradingError(iteration, "comparator", graderResponse, comparatorResponse, mappings, err)
-		return nil, 0, 0, nil, string(rawEvidence), err
-	}
-	var compared comparatorOutput
-	if err := json.Unmarshal([]byte(comparatorResponse), &compared); err != nil {
-		err = fmt.Errorf("decode comparator response: %w", err)
-		persistGradingError(iteration, "comparator", graderResponse, comparatorResponse, mappings, err)
-		return nil, 0, 0, nil, string(rawEvidence), err
-	}
-	comparatorEntries, err := validateComparatorEntries(compared, comparatorInputs)
 	if err != nil {
 		persistGradingError(iteration, "comparator", graderResponse, comparatorResponse, mappings, err)
 		return nil, 0, 0, nil, string(rawEvidence), err
@@ -188,10 +183,109 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 	return graded, candidateWins, baselineWins, nil, string(rawEvidence), nil
 }
 
-func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config) (string, error) {
-	encoded, err := json.Marshal(input)
+func batchStructuredJudgeInputs[T any](stage, instructions string, inputs []T, budget int, identity func(T) (string, int)) ([][]T, error) {
+	if budget <= 0 {
+		return nil, errors.New("judge input budget must be positive")
+	}
+	var batches [][]T
+	current := make([]T, 0, len(inputs))
+	for _, input := range inputs {
+		singleton := []T{input}
+		prompt, err := structuredJudgePrompt(instructions, singleton)
+		if err != nil {
+			return nil, err
+		}
+		if len(prompt) > budget {
+			id, trial := identity(input)
+			return nil, fmt.Errorf("%s input for case %q trial %d is %d bytes; budget is %d bytes", stage, id, trial, len(prompt), budget)
+		}
+		candidate := append(append([]T(nil), current...), input)
+		prompt, err = structuredJudgePrompt(instructions, candidate)
+		if err != nil {
+			return nil, err
+		}
+		if len(prompt) > budget {
+			batches = append(batches, current)
+			current = singleton
+			continue
+		}
+		current = candidate
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches, nil
+}
+
+func runGraderBatches(ctx context.Context, agent harness.Harness, batches [][]judgeInput, inputs []judgeInput, config Config) (map[string]judgeEntry, string, error) {
+	merged := judgeOutput{}
+	rawResponses := make([]string, 0, len(batches))
+	for index, batch := range batches {
+		response, err := runStructuredJudge(ctx, agent, graderPrompt, batch, graderSchema(), config)
+		rawResponses = append(rawResponses, response)
+		if err != nil {
+			return nil, encodeBatchResponses(rawResponses), fmt.Errorf("grader batch %d/%d: %w", index+1, len(batches), err)
+		}
+		var output judgeOutput
+		if err := json.Unmarshal([]byte(response), &output); err != nil {
+			return nil, encodeBatchResponses(rawResponses), fmt.Errorf("decode grader batch %d/%d response: %w", index+1, len(batches), err)
+		}
+		if _, err := validateGraderEntries(output, batch); err != nil {
+			return nil, encodeBatchResponses(rawResponses), fmt.Errorf("validate grader batch %d/%d: %w", index+1, len(batches), err)
+		}
+		merged.Cases = append(merged.Cases, output.Cases...)
+	}
+	entries, err := validateGraderEntries(merged, inputs)
 	if err != nil {
-		return "", fmt.Errorf("encode judge input: %w", err)
+		return nil, encodeBatchResponses(rawResponses), fmt.Errorf("validate merged grader batches: %w", err)
+	}
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return nil, encodeBatchResponses(rawResponses), fmt.Errorf("encode merged grader response: %w", err)
+	}
+	return entries, string(encoded), nil
+}
+
+func runComparatorBatches(ctx context.Context, agent harness.Harness, batches [][]comparatorInput, inputs []comparatorInput, config Config) (map[string]comparatorEntry, string, error) {
+	merged := comparatorOutput{}
+	rawResponses := make([]string, 0, len(batches))
+	for index, batch := range batches {
+		response, err := runStructuredJudge(ctx, agent, comparatorPrompt, batch, comparatorSchema(), config)
+		rawResponses = append(rawResponses, response)
+		if err != nil {
+			return nil, encodeBatchResponses(rawResponses), fmt.Errorf("comparator batch %d/%d: %w", index+1, len(batches), err)
+		}
+		var output comparatorOutput
+		if err := json.Unmarshal([]byte(response), &output); err != nil {
+			return nil, encodeBatchResponses(rawResponses), fmt.Errorf("decode comparator batch %d/%d response: %w", index+1, len(batches), err)
+		}
+		if _, err := validateComparatorEntries(output, batch); err != nil {
+			return nil, encodeBatchResponses(rawResponses), fmt.Errorf("validate comparator batch %d/%d: %w", index+1, len(batches), err)
+		}
+		merged.Cases = append(merged.Cases, output.Cases...)
+	}
+	entries, err := validateComparatorEntries(merged, inputs)
+	if err != nil {
+		return nil, encodeBatchResponses(rawResponses), fmt.Errorf("validate merged comparator batches: %w", err)
+	}
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return nil, encodeBatchResponses(rawResponses), fmt.Errorf("encode merged comparator response: %w", err)
+	}
+	return entries, string(encoded), nil
+}
+
+func encodeBatchResponses(responses []string) string {
+	encoded, _ := json.Marshal(struct {
+		Batches []string `json:"batches"`
+	}{Batches: responses})
+	return string(encoded)
+}
+
+func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config) (string, error) {
+	prompt, err := structuredJudgePrompt(instructions, input)
+	if err != nil {
+		return "", err
 	}
 	workDir, err := os.MkdirTemp("", "shuhari-judge-")
 	if err != nil {
@@ -206,11 +300,19 @@ func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions
 	if effort == "" {
 		effort = config.ReasoningEffort
 	}
-	judged, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: strings.TrimSpace(instructions) + "\n\n" + string(encoded), Model: model, ReasoningEffort: effort, Sandbox: "read-only", Timeout: config.Timeout, OutputSchema: schema})
+	judged, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: prompt, Model: model, ReasoningEffort: effort, Sandbox: "read-only", Timeout: config.Timeout, OutputSchema: schema})
 	if err != nil {
 		return judged.Response, fmt.Errorf("run judge: %w", err)
 	}
 	return judged.Response, nil
+}
+
+func structuredJudgePrompt(instructions string, input any) (string, error) {
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return "", fmt.Errorf("encode judge input: %w", err)
+	}
+	return strings.TrimSpace(instructions) + "\n\n" + string(encoded), nil
 }
 
 func validateGraderEntries(output judgeOutput, inputs []judgeInput) (map[string]judgeEntry, error) {
