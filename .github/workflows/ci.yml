@@ -31,12 +31,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes bubblewrap
           npm install --global @openai/codex@0.146.0
-      - name: Test Codex credential boundary
+      - name: Test Codex credential protections
         run: |
           sudo env \
             PATH="$PATH" \
             SHUHARI_REQUIRE_CODEX_SANDBOX_TEST=1 \
-            "$(command -v go)" test -race -tags=codex_sandbox -run '^TestCodexDefaultSandboxDeniesChildCredentialReads$' -v ./internal/harness
+            "$(command -v go)" test -race -tags=codex_sandbox -run '^TestCodex(DefaultSandboxDeniesChildCredentialReads|CommandEnvironmentStripsGitHubCredentials)$' -v ./internal/harness
       - name: Prove credential-deny mutation is detected
         run: |
           if sudo env \

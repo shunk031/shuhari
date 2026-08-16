@@ -597,7 +597,7 @@ func writeCodexProfile(codexHome string, request Request) error {
 	if request.Sandbox != "danger-full-access" {
 		builder.WriteString("default_permissions = \"shuhari-eval\"\n\n")
 	}
-	builder.WriteString("[shell_environment_policy]\ninherit = \"none\"\nignore_default_excludes = false\n\n")
+	builder.WriteString("[shell_environment_policy]\ninherit = \"none\"\nignore_default_excludes = false\nexclude = [\"GH_*\", \"GITHUB_*\"]\n\n")
 	builder.WriteString("[shell_environment_policy.set]\n")
 	builder.WriteString("CODEX_HOME = \"\"\n")
 	fmt.Fprintf(&builder, "HOME = %s\n", tomlString(commandHome))
@@ -776,6 +776,9 @@ func cleanEnvironment(codexHome string) []string {
 }
 
 func allowedEnvironmentVariable(name string) bool {
+	if strings.HasPrefix(name, "GH_") || strings.HasPrefix(name, "GITHUB_") {
+		return false
+	}
 	if strings.HasPrefix(name, "LC_") {
 		return true
 	}
