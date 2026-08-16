@@ -18,6 +18,12 @@ const (
 
 var groundingTokenPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)
 
+var observationQuotePairs = map[rune]rune{
+	'"': '"',
+	'“': '”',
+	'‘': '’',
+}
+
 type evidenceGrounding struct {
 	Kind        string
 	Score       float64
@@ -198,6 +204,9 @@ func quotedObservations(evidence string) []string {
 		for _, observation := range escapedDoubleQuotedObservations(scope) {
 			appendObservation(observation)
 		}
+		for _, observation := range smartQuotedObservations(scope) {
+			appendObservation(observation)
+		}
 	}
 	return observations
 }
@@ -207,13 +216,8 @@ func outerQuotedObservations(evidence string) []string {
 	observations := make([]string, 0, 1)
 	for index := 0; index < len(runes); index++ {
 		opening := runes[index]
-		closing := rune(0)
-		switch opening {
-		case '"':
-			closing = '"'
-		case '“':
-			closing = '”'
-		default:
+		closing, ok := observationQuotePairs[opening]
+		if !ok {
 			continue
 		}
 		for end := index + 1; end < len(runes); end++ {
@@ -221,6 +225,34 @@ func outerQuotedObservations(evidence string) []string {
 				continue
 			}
 			observations = append(observations, string(runes[index+1:end]))
+			index = end
+			break
+		}
+	}
+	return observations
+}
+
+func smartQuotedObservations(value string) []string {
+	runes := []rune(value)
+	observations := []string{}
+	for index := 0; index < len(runes); index++ {
+		opening := runes[index]
+		if opening == '"' {
+			continue
+		}
+		closing, ok := observationQuotePairs[opening]
+		if !ok {
+			continue
+		}
+		for end := index + 1; end < len(runes); end++ {
+			if runes[end] != closing {
+				continue
+			}
+			observation := string(runes[index+1 : end])
+			observations = append(observations, observation)
+			if trimmed := strings.TrimSuffix(observation, ","); trimmed != observation {
+				observations = append(observations, trimmed)
+			}
 			index = end
 			break
 		}
