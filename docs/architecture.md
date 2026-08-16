@@ -52,7 +52,7 @@ There is no public Go SDK or dynamic plugin registry. A new agent is added as a 
 ## Evaluation flow
 
 1. The CLI resolves and strictly validates the target and its cases.
-2. The engine asks the selected adapter to resolve the requested security policy. The exact resolution is validated once and then passed unchanged to run requests, artifacts, and cache-key construction. Evaluation judges receive a separately resolved `read-only`, offline policy.
+2. The engine resolves run and judge security, then completes the adapter preflight before creating a workspace.
 3. The engine creates a new `iteration-N` directory and schedules a bounded number of candidate/baseline runs.
 4. Every run receives a fresh temporary Git repository and isolated agent home. Fixtures are copied into the repository; evaluator-only fields such as `expected_output` are not included in the run prompt. Produced files and the final response are copied into the durable workspace.
 5. A structured grader receives blinded A/B artifacts. Its response is checked for complete case, trial, assertion, and quoted-evidence coverage before grades are accepted.
@@ -66,55 +66,31 @@ Trigger checks measure whether the agent reads the target `SKILL.md`; they do no
 
 ## Execution security contract
 
-Shuhari exposes its own security vocabulary. Native agent mode names are adapter implementation details and must not appear as accepted `--sandbox` or `SHUHARI_SANDBOX` values.
+Shuhari exposes neutral security levels. Native agent mode names are adapter details, not accepted `--sandbox` or `SHUHARI_SANDBOX` values.
 
 ### Neutral sandbox levels
 
 | Level | Filesystem guarantee | Network guarantee |
 | --- | --- | --- |
-| `isolated` | Evaluated commands may write only inside the evaluation workspace. Outside it, the adapter exposes only the minimum read-only runtime paths needed to execute commands. | Denied by default; allowed only when `--network=true` is requested and the adapter can enforce that choice. |
-| `read-only` | Evaluated commands cannot write to the evaluation workspace or host paths. The adapter exposes only the minimum read-only runtime paths needed to execute commands. | Denied by default; allowed only when `--network=true` is requested and the adapter can enforce that choice. |
-| `unsandboxed` | Shuhari makes no filesystem restriction claim. | Shuhari makes no egress restriction claim, so this level is accepted only with explicit `--network=true`. |
-
-An adapter must implement these guarantees literally. A mode that is merely similar is not an acceptable mapping.
+| `isolated` | Commands can write only inside the evaluation workspace; other exposed paths are read-only. | Denied unless `--network=true`. |
+| `read-only` | Commands cannot write to the workspace or host. | Denied unless `--network=true`. |
+| `unsandboxed` | No filesystem guarantee. | No egress guarantee; requires `--network=true`. |
 
 ### Credential boundary
 
-Credential protection is recorded separately from the sandbox level:
-
-- `enforced` means model-generated commands cannot read either the caller's source authentication material or the temporary authentication material used by the agent client.
-- `none` means Shuhari provides no credential-separation guarantee. An outer container or runner may still provide one, but that protection is outside the artifact claim.
-
-`isolated` and `read-only` require `credential_boundary: enforced`. `unsandboxed` records `credential_boundary: none` and requires `SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY=1`. Keeping this field separate prevents a sandbox label from silently standing in for a credential guarantee.
+`credential_boundary: enforced` means model-generated commands cannot read source or temporary agent credentials. `none` makes no such claim. Protected levels require `enforced`; `unsandboxed` records `none` and requires `SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY=1`.
 
 ### Adapter resolution and refusal
 
-The harness method `ResolveSecurity(context.Context, SecurityPolicy) (SecurityResolution, error)` maps a requested neutral policy to one exact adapter resolution. A resolution contains the neutral level, effective network access, credential boundary, adapter name, native mode, and a digest of the adapter policy.
+An explicit `--sandbox` wins over `SHUHARI_SANDBOX`. `ResolveSecurity` returns one digest-bearing adapter mapping; the engine validates and reuses it for runs, artifacts, and cache keys. `Probe` checks the native sandbox before workspace creation. Unsupported mappings or hosts return `ErrUnsupportedSecurityPolicy`; Shuhari never degrades.
 
-The engine validates the resolution against the request before creating artifacts. It passes that same value to every corresponding `Run` call; `Run` validates the supplied adapter resolution but does not resolve the policy again. If an adapter cannot honor any requested guarantee, it returns `ErrUnsupportedSecurityPolicy`. Shuhari does not degrade to a weaker mode or relabel a weaker result as compliant.
+Judges use `read-only` without network. When the evaluated run is `unsandboxed`, the judge also uses acknowledged `unsandboxed` with network because a protected judge cannot run on that host.
 
 ### Security provenance
 
-Workspace manifests, `benchmark.json`, and `trigger.json` use schema version 2 and record a `security` object:
+Schema-v2 manifests and verdicts record the neutral level, network access, credential boundary, adapter, native mode, and policy digest. Evaluation manifests also record `judge_security`. The v2 cache key includes both resolutions, adapter and runner identity, suite inputs, configuration, and judge prompts.
 
-```json
-{
-  "sandbox_level": "isolated",
-  "network_access": "denied",
-  "credential_boundary": "enforced",
-  "adapter": {
-    "name": "codex",
-    "native_mode": "workspace-write+shuhari-permission-profile",
-    "policy_digest": "sha256:..."
-  }
-}
-```
-
-The v2 cache namespace and cache key include the requested configuration, resolved run security, resolved judge security, adapter identity, runner binary, suite inputs, and judge prompt digests. Changing a neutral level, native mapping, or adapter-policy implementation cannot reuse a v1 or differently secured success.
-
-## Codex mapping
-
-The Codex adapter is the current implementation example:
+## Codex adapter
 
 | Shuhari level | Codex implementation | Recorded credential boundary |
 | --- | --- | --- |
@@ -122,36 +98,27 @@ The Codex adapter is the current implementation example:
 | `read-only` | Codex `read-only` plus the Shuhari permission profile | `enforced` |
 | `unsandboxed` | Codex `danger-full-access` | `none` |
 
-For the two enforced modes, the Codex client receives a randomized mode-0700 temporary tree with mode-0600 configuration and authentication files. Model-generated commands receive a separate minimal environment, and the permission profile explicitly denies both the source and temporary Codex homes. The `unsandboxed` mapping cannot enforce either filesystem isolation or network denial, so `unsandboxed` with `--network=false` is rejected.
-
-Claude Code and Gemini CLI mappings are not implemented. Selecting an unavailable agent or a policy without a verified mapping fails closed.
+Protected runs give the Codex client a private temporary home while child commands receive a minimal environment that denies source and temporary Codex homes. Claude Code and Gemini CLI remain unsupported until their adapters pass conformance.
 
 ## Adapter contract
 
-A harness implementation must provide:
+- `Capabilities` declares skill, instructions, and trigger-evidence support.
+- `ResolveSecurity` returns an exact mapping or `ErrUnsupportedSecurityPolicy`.
+- `Probe` verifies the supplied resolutions on the host and returns cache identity.
+- `Run` starts a clean context and returns response, transcript, usage, timing, read evidence, and actions.
 
-- `Probe`, returning the executable, version, configuration, and environment identity used for provenance and caching;
-- `Capabilities`, declaring whether skill installation, instructions installation, and trigger-read evidence are supported;
-- `ResolveSecurity`, returning a validated, digest-bearing mapping for a neutral policy or `ErrUnsupportedSecurityPolicy` without degradation;
-- `Run`, starting a clean agent context with the supplied resolution, timeout, model settings, workspace, optional target, and optional structured-output schema;
-- structured result data containing the final response, raw transcript, token usage, duration, target-read evidence, ordered actions, and explicitly order-unknown actions.
-
-The adapter owns native invocation flags, isolated agent state, retry cleanup, event parsing, and the proof that its recorded native mode enforces the neutral contract. It must not reinterpret repository gate policy such as trial counts or strict negative controls.
+The adapter owns native flags, state isolation, retries, event parsing, and conformance proof. Repository gate policy stays outside it.
 
 ## Adapter conformance
 
-Every new adapter must pass a platform-appropriate conformance suite before it is selectable:
+An adapter is selectable only after tests prove:
 
-- resolve every supported neutral level to stable adapter metadata and reject every unsupported policy with `ErrUnsupportedSecurityPolicy`;
-- exercise workspace reads and writes, outside-workspace reads and writes, and symlink escapes against the effective child-command sandbox;
-- attempt to read both source and temporary authentication material from a model-command child;
-- exercise denied and allowed network policies rather than inspecting generated configuration text;
-- fail closed when the native sandbox is unavailable;
-- prove that a supplied resolution is used unchanged and that a mutated level, native mode, or policy digest is rejected;
-- parse recorded native event fixtures for completion, failures, usage, target reads, and action ordering;
-- test acknowledged `unsandboxed` execution separately and prove that its artifacts record `credential_boundary: none` and `network_access: allowed`.
+- stable mappings, typed refusals, host preflight, and unchanged resolution reuse;
+- workspace and outside-path reads/writes, symlink escapes, and source/temporary credential denial;
+- denied and allowed network behavior;
+- native event parsing and explicit `unsandboxed` provenance.
 
-The Codex conformance job runs the real child sandbox for `isolated` and `read-only`. A mutation run removes the credential-deny entries and must fail, proving that the regression test depends on the effective policy rather than matching configuration text.
+CI runs these probes against the real Codex child sandbox for both protected levels and both network states. Credential, filesystem, and network mutations must make the suite fail.
 
 ## Action evidence
 
