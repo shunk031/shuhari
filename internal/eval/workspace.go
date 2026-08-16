@@ -111,12 +111,22 @@ func copyOutputs(source, destination string) error {
 			return err
 		}
 		target := filepath.Join(destination, relative)
+		if entry.Type()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return fmt.Errorf("read agent output symlink %s: %w", relative, err)
+			}
+			if symlinkStaysWithin(source, path, linkTarget) {
+				if err := os.Symlink(linkTarget, target); err != nil {
+					return fmt.Errorf("preserve agent output symlink %s: %w", relative, err)
+				}
+				return nil
+			}
+			return writeSymlinkMetadata(target, filepath.ToSlash(relative), linkTarget)
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("agent output contains a symlink: %s", relative)
 		}
 		if entry.IsDir() {
 			return os.MkdirAll(target, 0o755)
@@ -127,6 +137,57 @@ func copyOutputs(source, destination string) error {
 		}
 		return os.WriteFile(target, contents, info.Mode().Perm())
 	})
+}
+
+func symlinkStaysWithin(root, linkPath, linkTarget string) bool {
+	if filepath.IsAbs(linkTarget) {
+		return false
+	}
+	candidate := filepath.Clean(filepath.Join(filepath.Dir(linkPath), linkTarget))
+	if !pathWithin(root, candidate) {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	return err == nil && pathWithin(root, resolved)
+}
+
+func pathWithin(root, candidate string) bool {
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	absoluteCandidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return false
+	}
+	relative, err := filepath.Rel(absoluteRoot, absoluteCandidate)
+	if err != nil || filepath.IsAbs(relative) {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func writeSymlinkMetadata(path, link, target string) error {
+	metadata := struct {
+		Type   string `json:"type"`
+		Link   string `json:"link"`
+		Target string `json:"target"`
+		Note   string `json:"note"`
+	}{
+		Type:   "symlink",
+		Link:   link,
+		Target: target,
+		Note:   "The symlink was recorded as metadata and not followed because its target was absolute, escaped, or could not be resolved within the collected output tree.",
+	}
+	contents, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode agent output symlink metadata %s: %w", link, err)
+	}
+	contents = append(contents, '\n')
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		return fmt.Errorf("write agent output symlink metadata %s: %w", link, err)
+	}
+	return nil
 }
 
 func writeJSON(path string, value any) error {
@@ -157,11 +218,24 @@ func renderArtifact(outputDir string) (string, error) {
 	sort.Strings(paths)
 	var builder strings.Builder
 	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return "", fmt.Errorf("inspect output artifact: %w", err)
+		}
+		relative, _ := filepath.Rel(outputDir, path)
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return "", fmt.Errorf("read output artifact symlink: %w", err)
+			}
+			fmt.Fprintf(&builder, "\n--- symlink: %s -> %s ---\n", filepath.ToSlash(relative), target)
+			builder.WriteString("preserved because the target resolves within the collected output tree\n")
+			continue
+		}
 		contents, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("read output artifact: %w", err)
 		}
-		relative, _ := filepath.Rel(outputDir, path)
 		fmt.Fprintf(&builder, "\n--- file: %s (%d bytes) ---\n", filepath.ToSlash(relative), len(contents))
 		if len(contents) <= 64*1024 && utf8.Valid(contents) && !bytes.ContainsRune(contents, '\x00') {
 			builder.Write(contents)

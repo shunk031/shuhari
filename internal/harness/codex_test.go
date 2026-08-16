@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -514,6 +515,40 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_token
 	}
 	if _, err := os.Stat(filepath.Join(workDir, "contaminated.txt")); !os.IsNotExist(err) {
 		t.Fatalf("contaminated retry artifact survived: %v", err)
+	}
+}
+
+func TestCodexDoesNotRetryInputTooLarge(t *testing.T) {
+	t.Parallel()
+
+	capture := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := fmt.Sprintf(`#!/bin/sh
+count_file=%q/count
+count=0
+if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
+printf '%%s\n' "$((count + 1))" > "$count_file"
+printf '%%s\n' 'WARNING: temporary directory is in use' >&2
+printf '%%s\n' 'turn/start failed: Input exceeds the maximum length of 1048576 characters. data: {"input_error_code":"input_too_large"}' >&2
+exit 1
+`, capture)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent := newCodex(Config{Executable: script})
+	_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "oversized", Timeout: time.Second})
+	if err == nil {
+		t.Fatal("Run() accepted input_too_large")
+	}
+	if errors.Is(err, ErrTransient) {
+		t.Fatalf("input_too_large was classified transient: %v", err)
+	}
+	count, readErr := os.ReadFile(filepath.Join(capture, "count"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.TrimSpace(string(count)) != "1" {
+		t.Fatalf("Codex invocations = %q, want one", strings.TrimSpace(string(count)))
 	}
 }
 
