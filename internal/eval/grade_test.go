@@ -272,6 +272,50 @@ CREDENTIAL=value tool review create`
 	}
 }
 
+func TestGroundEvidenceExtractsNestedSmartQuoteObservations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		evidence        string
+		artifact        string
+		want            string
+		wantObservation string
+	}{
+		{
+			name:            "double smart quotes inside ASCII quotes",
+			evidence:        `"The status explicitly says “without printing the token,” and no PAT value or token-bearing command appears in the displayed artifacts."`,
+			artifact:        "The verification completed without printing the token before the status was written.",
+			want:            evidenceGroundingStrong,
+			wantObservation: "without printing the token",
+		},
+		{
+			name:            "single smart quotes inside ASCII quotes",
+			evidence:        `"The report says ‘credentials remain in memory only,’ and records no persistent secret."`,
+			artifact:        "The report confirms credentials remain in memory only during the command.",
+			want:            evidenceGroundingStrong,
+			wantObservation: "credentials remain in memory only",
+		},
+		{
+			name:     "fabricated smart-quoted observation",
+			evidence: `"The report says “the token was uploaded to the audit service,” before completion."`,
+			artifact: "The report confirms credentials remain in memory only during the command.",
+			want:     evidenceGroundingHallucination,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			grounding := groundEvidence(test.evidence, test.artifact)
+			if grounding.Kind != test.want {
+				t.Fatalf("groundEvidence() kind = %q, want %q (score %.4f, span %q)", grounding.Kind, test.want, grounding.Score, grounding.Span)
+			}
+			if test.wantObservation != "" && grounding.Observation != test.wantObservation {
+				t.Fatalf("groundEvidence() observation = %q, want %q", grounding.Observation, test.wantObservation)
+			}
+		})
+	}
+}
+
 func TestGroundEvidenceNormalizesLineWrapping(t *testing.T) {
 	t.Parallel()
 
