@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,18 @@ func TestSuccessRoundTrip(t *testing.T) {
 	}
 	if !ok || !got.Passed || !got.CreatedAt.Equal(record.CreatedAt) {
 		t.Fatalf("GetSuccess() = %#v, %v", got, ok)
+	}
+}
+
+func TestDefaultStoreUsesV2Namespace(t *testing.T) {
+	t.Parallel()
+
+	store, err := DefaultStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(store.Root) != "v2" {
+		t.Fatalf("cache root = %q, want v2 namespace", store.Root)
 	}
 }
 

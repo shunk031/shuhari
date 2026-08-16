@@ -5,15 +5,7 @@
   "type": "object",
   "properties": {
     "schema_version": { "const": "2" },
-    "security": {
-      "type": "object",
-      "properties": {
-        "sandbox_mode": { "enum": ["read-only", "workspace-write", "danger-full-access"] },
-        "credential_boundary": { "enum": ["codex-sandbox", "none"] }
-      },
-      "required": ["sandbox_mode", "credential_boundary"],
-      "additionalProperties": false
-    },
+    "security": { "$ref": "#/$defs/security" },
     "decision_rule": { "enum": ["majority", "strict"] },
     "passed": { "type": "boolean" },
     "target_read": {
@@ -27,5 +19,37 @@
     "error": { "type": "string", "minLength": 1 }
   },
   "required": ["schema_version", "security", "decision_rule", "passed", "target_read"],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "security": {
+      "type": "object",
+      "properties": {
+        "sandbox_level": { "enum": ["isolated", "read-only", "unsandboxed"] },
+        "network_access": { "enum": ["denied", "allowed"] },
+        "credential_boundary": { "enum": ["enforced", "none"] },
+        "adapter": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "native_mode": { "type": "string", "minLength": 1 },
+            "policy_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]+$" }
+          },
+          "required": ["name", "native_mode", "policy_digest"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["sandbox_level", "network_access", "credential_boundary", "adapter"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "sandbox_level": { "const": "unsandboxed" } }, "required": ["sandbox_level"] },
+          "then": { "properties": { "network_access": { "const": "allowed" }, "credential_boundary": { "const": "none" } } }
+        },
+        {
+          "if": { "properties": { "sandbox_level": { "enum": ["isolated", "read-only"] } }, "required": ["sandbox_level"] },
+          "then": { "properties": { "credential_boundary": { "const": "enforced" } } }
+        }
+      ]
+    }
+  }
 }

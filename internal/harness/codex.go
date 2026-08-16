@@ -128,6 +128,64 @@ func (*codexHarness) Capabilities() Capabilities {
 	return Capabilities{Skills: true, Instructions: true, TriggerEvidence: true}
 }
 
+const (
+	codexIsolatedNativeMode    = "workspace-write+shuhari-permission-profile"
+	codexReadOnlyNativeMode    = "read-only+shuhari-permission-profile"
+	codexUnsandboxedNativeMode = "danger-full-access"
+	codexSecurityPolicyVersion = "codex-security-v2"
+)
+
+func (*codexHarness) ResolveSecurity(_ context.Context, policy SecurityPolicy) (SecurityResolution, error) {
+	if err := ValidateSecurityPolicy(policy); err != nil {
+		var unsupported *UnsupportedSecurityPolicyError
+		if errors.As(err, &unsupported) {
+			return SecurityResolution{}, &UnsupportedSecurityPolicyError{Adapter: "codex", Policy: policy, Reason: unsupported.Reason}
+		}
+		return SecurityResolution{}, err
+	}
+	nativeMode := ""
+	boundary := CredentialBoundaryEnforced
+	switch policy.Level {
+	case SandboxIsolated:
+		nativeMode = codexIsolatedNativeMode
+	case SandboxReadOnly:
+		nativeMode = codexReadOnlyNativeMode
+	case SandboxUnsandboxed:
+		nativeMode = codexUnsandboxedNativeMode
+		boundary = CredentialBoundaryNone
+	default:
+		return SecurityResolution{}, &UnsupportedSecurityPolicyError{Adapter: "codex", Policy: policy, Reason: "unknown neutral sandbox level"}
+	}
+	network := NetworkDenied
+	if policy.Network {
+		network = NetworkAllowed
+	}
+	resolution := SecurityResolution{
+		SandboxLevel:       policy.Level,
+		NetworkAccess:      network,
+		CredentialBoundary: boundary,
+		Adapter: AdapterSecurity{
+			Name:         "codex",
+			NativeMode:   nativeMode,
+			PolicyDigest: codexSecurityPolicyDigest(policy, nativeMode),
+		},
+	}
+	if err := ValidateSecurityResolution(policy, resolution); err != nil {
+		return SecurityResolution{}, err
+	}
+	return resolution, nil
+}
+
+func codexSecurityPolicyDigest(policy SecurityPolicy, nativeMode string) string {
+	encoded, _ := json.Marshal(struct {
+		Version    string         `json:"version"`
+		Policy     SecurityPolicy `json:"policy"`
+		NativeMode string         `json:"native_mode"`
+	}{Version: codexSecurityPolicyVersion, Policy: policy, NativeMode: nativeMode})
+	digest := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
 func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error) {
 	if request.WorkDir == "" {
 		return Result{}, errors.New("codex work directory is required")
@@ -135,8 +193,7 @@ func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error)
 	if request.Timeout <= 0 {
 		return Result{}, errors.New("codex timeout must be positive")
 	}
-	request.Sandbox = EffectiveSandbox(request.Sandbox)
-	if err := ValidateSandbox(request.Sandbox); err != nil {
+	if err := validateCodexSecurityResolution(request.Security); err != nil {
 		return Result{}, err
 	}
 	if err := os.MkdirAll(request.WorkDir, 0o755); err != nil {
@@ -183,6 +240,29 @@ func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error)
 	panic("unreachable")
 }
 
+func validateCodexSecurityResolution(resolution SecurityResolution) error {
+	policy := resolution.Policy()
+	if err := ValidateSecurityResolution(policy, resolution); err != nil {
+		return err
+	}
+	if resolution.Adapter.Name != "codex" {
+		return fmt.Errorf("invalid Codex security resolution: adapter is %q", resolution.Adapter.Name)
+	}
+	wantMode := ""
+	switch resolution.SandboxLevel {
+	case SandboxIsolated:
+		wantMode = codexIsolatedNativeMode
+	case SandboxReadOnly:
+		wantMode = codexReadOnlyNativeMode
+	case SandboxUnsandboxed:
+		wantMode = codexUnsandboxedNativeMode
+	}
+	if resolution.Adapter.NativeMode != wantMode || resolution.Adapter.PolicyDigest != codexSecurityPolicyDigest(policy, wantMode) {
+		return errors.New("invalid Codex security resolution: native mode or policy digest does not match the neutral policy")
+	}
+	return nil
+}
+
 func (h *codexHarness) runOnce(parent context.Context, request Request) (Result, error) {
 	if err := ensureGitRepository(request.WorkDir); err != nil {
 		return Result{}, err
@@ -222,8 +302,8 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 		args = append(args, "-c", override)
 	}
 	args = append(args, "--profile", "shuhari", "--ephemeral", "--json")
-	if request.Sandbox == "danger-full-access" {
-		args = append(args, "--sandbox", request.Sandbox)
+	if request.Security.SandboxLevel == SandboxUnsandboxed {
+		args = append(args, "--sandbox", "danger-full-access")
 	}
 	args = append(args, "--cd", request.WorkDir)
 	if len(request.OutputSchema) > 0 {
@@ -644,7 +724,7 @@ func writeCodexProfile(codexHome string, request Request) error {
 		}
 	}
 	var builder strings.Builder
-	if request.Sandbox != "danger-full-access" {
+	if request.Security.SandboxLevel != SandboxUnsandboxed {
 		builder.WriteString("default_permissions = \"shuhari-eval\"\n\n")
 	}
 	builder.WriteString("[shell_environment_policy]\ninherit = \"none\"\nignore_default_excludes = false\nexclude = [\"GH_*\", \"GITHUB_*\"]\n\n")
@@ -655,12 +735,12 @@ func writeCodexProfile(codexHome string, request Request) error {
 	fmt.Fprintf(&builder, "PATH = %s\n", tomlString(commandPath))
 	fmt.Fprintf(&builder, "TMPDIR = %s\n", tomlString(commandTmp))
 	builder.WriteString("LANG = \"C.UTF-8\"\n")
-	if request.Sandbox != "danger-full-access" {
+	if request.Security.SandboxLevel != SandboxUnsandboxed {
 		access := "write"
-		if request.Sandbox == "read-only" {
+		if request.Security.SandboxLevel == SandboxReadOnly {
 			access = "read"
-		} else if request.Sandbox != "workspace-write" {
-			return fmt.Errorf("unsupported Codex sandbox %q", request.Sandbox)
+		} else if request.Security.SandboxLevel != SandboxIsolated {
+			return fmt.Errorf("unsupported Shuhari sandbox level %q", request.Security.SandboxLevel)
 		}
 		builder.WriteString("\n[permissions.shuhari-eval]\ndescription = \"Shuhari isolated evaluation\"\n\n")
 		builder.WriteString("[permissions.shuhari-eval.filesystem]\n\":minimal\" = \"read\"\n")
@@ -674,7 +754,7 @@ func writeCodexProfile(codexHome string, request Request) error {
 		builder.WriteString("\n[permissions.shuhari-eval.filesystem.\":workspace_roots\"]\n")
 		fmt.Fprintf(&builder, "\".\" = %s\n", tomlString(access))
 		builder.WriteString("\n[permissions.shuhari-eval.network]\n")
-		fmt.Fprintf(&builder, "enabled = %t\n", request.Network)
+		fmt.Fprintf(&builder, "enabled = %t\n", request.Security.NetworkAccess == NetworkAllowed)
 	}
 	if err := os.WriteFile(filepath.Join(codexHome, "shuhari.config.toml"), []byte(builder.String()), 0o600); err != nil {
 		return fmt.Errorf("write isolated Codex profile: %w", err)

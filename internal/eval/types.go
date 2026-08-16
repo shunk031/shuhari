@@ -39,7 +39,7 @@ type Config struct {
 	ReasoningEffort      string        `json:"reasoning_effort,omitempty"`
 	JudgeModel           string        `json:"judge_model,omitempty"`
 	JudgeReasoningEffort string        `json:"judge_reasoning_effort,omitempty"`
-	Sandbox              string        `json:"sandbox"`
+	SandboxLevel         string        `json:"sandbox_level"`
 	Network              bool          `json:"network"`
 	Workspace            string        `json:"-"`
 	StrictAllTrials      bool          `json:"strict_all_trials"`
@@ -108,7 +108,12 @@ type gradedRun struct {
 	AssertionResult []AssertionResult
 }
 
-const workspaceSchemaVersion = "1"
+const (
+	workspaceManifestSchemaVersion = "2"
+	benchmarkSchemaVersion         = "2"
+	comparisonSchemaVersion        = "1"
+	evidenceSchemaVersion          = "1"
+)
 
 const (
 	variantWithSkill           = "with_skill"

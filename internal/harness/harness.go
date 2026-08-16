@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 )
 
@@ -23,12 +22,6 @@ const (
 	ActionFileChange   Action = "file_change"
 )
 
-const (
-	DangerFullAccessAcknowledgementEnv = "SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY"
-	CredentialBoundaryCodexSandbox     = "codex-sandbox"
-	CredentialBoundaryNone             = "none"
-)
-
 type Target struct {
 	Kind       TargetKind
 	Name       string
@@ -41,8 +34,7 @@ type Request struct {
 	Target          *Target
 	Model           string
 	ReasoningEffort string
-	Sandbox         string
-	Network         bool
+	Security        SecurityResolution
 	Timeout         time.Duration
 	OutputSchema    []byte
 }
@@ -97,11 +89,6 @@ func AttemptsFromError(err error) AttemptEvidence {
 	return AttemptEvidence{}
 }
 
-type ExecutionSecurity struct {
-	SandboxMode        string `json:"sandbox_mode"`
-	CredentialBoundary string `json:"credential_boundary"`
-}
-
 type Identity struct {
 	Agent             string `json:"agent"`
 	Version           string `json:"version"`
@@ -119,6 +106,7 @@ type Capabilities struct {
 type Harness interface {
 	Probe(context.Context) (Identity, error)
 	Capabilities() Capabilities
+	ResolveSecurity(context.Context, SecurityPolicy) (SecurityResolution, error)
 	Run(context.Context, Request) (Result, error)
 }
 
@@ -136,38 +124,6 @@ func New(name string, config Config) (Harness, error) {
 }
 
 var ErrTransient = errors.New("transient agent failure")
-
-func EffectiveSandbox(requested string) string {
-	if override := os.Getenv("SHUHARI_SANDBOX"); override != "" {
-		return override
-	}
-	if requested == "" {
-		return "workspace-write"
-	}
-	return requested
-}
-
-func ValidateSandbox(sandbox string) error {
-	switch sandbox {
-	case "read-only", "workspace-write":
-		return nil
-	case "danger-full-access":
-		if os.Getenv(DangerFullAccessAcknowledgementEnv) != "1" {
-			return fmt.Errorf("danger-full-access has no credential boundary; set %s=1 only inside an isolated runner or container", DangerFullAccessAcknowledgementEnv)
-		}
-		return nil
-	default:
-		return fmt.Errorf("unsupported Codex sandbox %q", sandbox)
-	}
-}
-
-func ExecutionSecurityForSandbox(sandbox string) ExecutionSecurity {
-	boundary := CredentialBoundaryCodexSandbox
-	if sandbox == "danger-full-access" {
-		boundary = CredentialBoundaryNone
-	}
-	return ExecutionSecurity{SandboxMode: sandbox, CredentialBoundary: boundary}
-}
 
 func ContainsOrderedActions(observed, orderUnknown, required []Action) bool {
 	unknown := map[Action]int{}

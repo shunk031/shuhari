@@ -54,7 +54,7 @@ func newCheckTriggerCommand(options Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			report, err := trigger.Run(command.Context(), suite, agent, store, trigger.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, Sandbox: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict, NoCache: flags.noCache})
+			report, err := trigger.Run(command.Context(), suite, agent, store, trigger.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict, NoCache: flags.noCache})
 			if err != nil {
 				return err
 			}
@@ -65,7 +65,7 @@ func newCheckTriggerCommand(options Options) *cobra.Command {
 	command.Flags().StringVar(&flags.executable, "agent-executable", "", "override the agent executable")
 	command.Flags().StringVar(&flags.model, "model", "", "model used for trigger runs")
 	command.Flags().StringVar(&flags.reasoningEffort, "reasoning-effort", "", "reasoning effort used for trigger runs")
-	command.Flags().StringVar(&flags.sandbox, "sandbox", "workspace-write", "agent sandbox mode")
+	command.Flags().StringVar(&flags.sandbox, "sandbox", "isolated", "Shuhari sandbox level: isolated, read-only, or unsandboxed")
 	command.Flags().BoolVar(&flags.network, "network", false, "allow network access during trigger runs")
 	command.Flags().StringVar(&flags.workspace, "workspace", "", "workspace root (defaults beside the skill)")
 	command.Flags().StringVar(&flags.casesPath, "cases", "", "trigger cases JSON (defaults to evals/triggers.json)")

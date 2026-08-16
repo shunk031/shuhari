@@ -29,16 +29,14 @@ type rawCase struct {
 	ShouldTrigger *bool           `json:"should_trigger"`
 }
 
-const triggerSchemaVersion = "2"
-
 type triggerVerdict struct {
-	SchemaVersion string                    `json:"schema_version"`
-	Security      harness.ExecutionSecurity `json:"security"`
-	DecisionRule  string                    `json:"decision_rule"`
-	Passed        bool                      `json:"passed"`
-	Results       map[string][]bool         `json:"target_read"`
-	Reasons       []string                  `json:"reasons,omitempty"`
-	Error         string                    `json:"error,omitempty"`
+	SchemaVersion string                     `json:"schema_version"`
+	Security      harness.SecurityResolution `json:"security"`
+	DecisionRule  string                     `json:"decision_rule"`
+	Passed        bool                       `json:"passed"`
+	Results       map[string][]bool          `json:"target_read"`
+	Reasons       []string                   `json:"reasons,omitempty"`
+	Error         string                     `json:"error,omitempty"`
 }
 
 func LoadSuite(skillPath, casesPath string) (Suite, error) {
@@ -125,11 +123,19 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if config.Trials < 1 || config.Jobs < 1 || config.Timeout <= 0 {
 		return Report{}, errors.New("trials, jobs, and timeout must be positive")
 	}
-	config.Sandbox = harness.EffectiveSandbox(config.Sandbox)
-	if err := harness.ValidateSandbox(config.Sandbox); err != nil {
+	level, err := harness.EffectiveSandboxLevel(config.SandboxLevel)
+	if err != nil {
 		return Report{}, err
 	}
-	security := harness.ExecutionSecurityForSandbox(config.Sandbox)
+	config.SandboxLevel = string(level)
+	policy := harness.SecurityPolicy{Level: level, Network: config.Network}
+	security, err := agent.ResolveSecurity(ctx, policy)
+	if err != nil {
+		return Report{}, err
+	}
+	if err := harness.ValidateSecurityResolution(policy, security); err != nil {
+		return Report{}, fmt.Errorf("security resolution: %w", err)
+	}
 	if !agent.Capabilities().TriggerEvidence {
 		return Report{}, errors.New("selected agent does not expose trigger evidence")
 	}
@@ -150,7 +156,8 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 		RunnerDigest string
 		Identity     harness.Identity
 		Config       Config
-	}{Digest: digest, RunnerDigest: runnerDigest, Identity: identity, Config: config})
+		Security     harness.SecurityResolution
+	}{Digest: digest, RunnerDigest: runnerDigest, Identity: identity, Config: config, Security: security})
 	key := cache.Key(options)
 	if !config.NoCache {
 		if record, ok, err := store.GetSuccess(key); err != nil {
@@ -163,18 +170,18 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if err != nil {
 		return Report{}, err
 	}
-	if err := writeTriggerManifest(iteration, suite, digest, runnerDigest, identity, config); err != nil {
+	if err := writeTriggerManifest(iteration, suite, digest, runnerDigest, identity, config, security); err != nil {
 		return Report{Workspace: iteration}, err
 	}
-	measurement, runErr := measure(ctx, suite, agent, config, iteration)
+	measurement, runErr := measure(ctx, suite, agent, config, security, iteration)
 	if runErr != nil {
-		summary := triggerVerdict{SchemaVersion: triggerSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: false, Results: measurement.Results, Error: runErr.Error()}
+		summary := triggerVerdict{SchemaVersion: triggerArtifactSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: false, Results: measurement.Results, Error: runErr.Error()}
 		_ = writeJSON(filepath.Join(iteration, "trigger.json"), summary)
 		return Report{Workspace: iteration}, runErr
 	}
 	reasons := ApplyPolicy(suite, measurement, Policy{Trials: config.Trials, StrictAllTrials: config.StrictAllTrials})
 	report := Report{Passed: len(reasons) == 0, Workspace: iteration, Reasons: reasons}
-	summary := triggerVerdict{SchemaVersion: triggerSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: report.Passed, Results: measurement.Results, Reasons: reasons}
+	summary := triggerVerdict{SchemaVersion: triggerArtifactSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: report.Passed, Results: measurement.Results, Reasons: reasons}
 	if err := writeJSON(filepath.Join(iteration, "trigger.json"), summary); err != nil {
 		return report, err
 	}
@@ -186,7 +193,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	return report, nil
 }
 
-func measure(ctx context.Context, suite Suite, agent harness.Harness, config Config, iteration string) (Measurement, error) {
+func measure(ctx context.Context, suite Suite, agent harness.Harness, config Config, security harness.SecurityResolution, iteration string) (Measurement, error) {
 	type task struct {
 		Case  Case
 		Trial int
@@ -215,7 +222,7 @@ func measure(ctx context.Context, suite Suite, agent harness.Harness, config Con
 		go func() {
 			defer group.Done()
 			for item := range tasks {
-				read, err := executeCase(ctx, suite, agent, config, iteration, item.Case, item.Trial)
+				read, err := executeCase(ctx, suite, agent, config, security, iteration, item.Case, item.Trial)
 				outcomes <- outcome{Case: item.Case, Trial: item.Trial, Read: read, Err: err}
 			}
 		}()
@@ -260,7 +267,7 @@ func ApplyPolicy(suite Suite, measurement Measurement, policy Policy) []string {
 	return reasons
 }
 
-func executeCase(ctx context.Context, suite Suite, agent harness.Harness, config Config, iteration string, item Case, trial int) (bool, error) {
+func executeCase(ctx context.Context, suite Suite, agent harness.Harness, config Config, security harness.SecurityResolution, iteration string, item Case, trial int) (bool, error) {
 	runDir := filepath.Join(iteration, "case-"+safeName(item.ID), fmt.Sprintf("trial-%d", trial))
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return false, fmt.Errorf("create trigger run directory: %w", err)
@@ -270,7 +277,7 @@ func executeCase(ctx context.Context, suite Suite, agent harness.Harness, config
 		return false, fmt.Errorf("create trigger work directory: %w", err)
 	}
 	defer os.RemoveAll(workDir)
-	result, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: item.Prompt, Target: &harness.Target{Kind: harness.TargetSkill, Name: suite.SkillName, SourcePath: suite.SkillPath}, Model: config.Model, ReasoningEffort: config.ReasoningEffort, Sandbox: config.Sandbox, Network: config.Network, Timeout: config.Timeout})
+	result, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: item.Prompt, Target: &harness.Target{Kind: harness.TargetSkill, Name: suite.SkillName, SourcePath: suite.SkillPath}, Model: config.Model, ReasoningEffort: config.ReasoningEffort, Security: security, Timeout: config.Timeout})
 	if err != nil {
 		runErr := fmt.Errorf("%s trial %d: %w", item.ID, trial, err)
 		if attempts := harness.AttemptsFromError(err); attempts.AttemptCount > 0 {
@@ -427,17 +434,22 @@ func digestSuite(suite Suite) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func writeTriggerManifest(iteration string, suite Suite, suiteDigest, runnerDigest string, identity harness.Identity, config Config) error {
+func writeTriggerManifest(iteration string, suite Suite, suiteDigest, runnerDigest string, identity harness.Identity, config Config, security harness.SecurityResolution) error {
+	policy := harness.SecurityPolicy{Level: harness.SandboxLevel(config.SandboxLevel), Network: config.Network}
+	if err := harness.ValidateSecurityResolution(policy, security); err != nil {
+		return fmt.Errorf("validate manifest security: %w", err)
+	}
 	return writeJSON(filepath.Join(iteration, "manifest.json"), struct {
-		SchemaVersion string             `json:"schema_version"`
-		CreatedAt     time.Time          `json:"created_at"`
-		TargetKind    harness.TargetKind `json:"target_kind"`
-		TargetName    string             `json:"target_name"`
-		SuiteDigest   string             `json:"suite_digest"`
-		RunnerDigest  string             `json:"runner_digest"`
-		AgentIdentity harness.Identity   `json:"agent_identity"`
-		Config        Config             `json:"config"`
-	}{SchemaVersion: "1", CreatedAt: time.Now().UTC(), TargetKind: harness.TargetSkill, TargetName: suite.SkillName, SuiteDigest: suiteDigest, RunnerDigest: runnerDigest, AgentIdentity: identity, Config: config})
+		SchemaVersion string                     `json:"schema_version"`
+		CreatedAt     time.Time                  `json:"created_at"`
+		TargetKind    harness.TargetKind         `json:"target_kind"`
+		TargetName    string                     `json:"target_name"`
+		SuiteDigest   string                     `json:"suite_digest"`
+		RunnerDigest  string                     `json:"runner_digest"`
+		AgentIdentity harness.Identity           `json:"agent_identity"`
+		Config        Config                     `json:"config"`
+		Security      harness.SecurityResolution `json:"security"`
+	}{SchemaVersion: triggerManifestSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: harness.TargetSkill, TargetName: suite.SkillName, SuiteDigest: suiteDigest, RunnerDigest: runnerDigest, AgentIdentity: identity, Config: config, Security: security})
 }
 
 func pathWithin(path, root string) bool {

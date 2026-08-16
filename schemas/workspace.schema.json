@@ -4,7 +4,7 @@
   "title": "Shuhari iteration manifest",
   "type": "object",
   "properties": {
-    "schema_version": { "const": "1" },
+    "schema_version": { "const": "2" },
     "created_at": { "type": "string", "format": "date-time" },
     "target_kind": { "enum": ["skill", "instructions"] },
     "target_name": { "type": "string", "minLength": 1 },
@@ -12,9 +12,42 @@
     "runner_digest": { "type": "string", "minLength": 1 },
     "agent_identity": { "type": "object" },
     "config": { "type": "object" },
+    "security": { "$ref": "#/$defs/security" },
     "grader_prompt_digest": { "type": "string", "minLength": 1 },
     "comparator_prompt_digest": { "type": "string", "minLength": 1 }
   },
-  "required": ["schema_version", "created_at", "target_kind", "target_name", "suite_digest", "runner_digest", "agent_identity", "config"],
-  "additionalProperties": false
+  "required": ["schema_version", "created_at", "target_kind", "target_name", "suite_digest", "runner_digest", "agent_identity", "config", "security"],
+  "additionalProperties": false,
+  "$defs": {
+    "security": {
+      "type": "object",
+      "properties": {
+        "sandbox_level": { "enum": ["isolated", "read-only", "unsandboxed"] },
+        "network_access": { "enum": ["denied", "allowed"] },
+        "credential_boundary": { "enum": ["enforced", "none"] },
+        "adapter": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "native_mode": { "type": "string", "minLength": 1 },
+            "policy_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]+$" }
+          },
+          "required": ["name", "native_mode", "policy_digest"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["sandbox_level", "network_access", "credential_boundary", "adapter"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "sandbox_level": { "const": "unsandboxed" } }, "required": ["sandbox_level"] },
+          "then": { "properties": { "network_access": { "const": "allowed" }, "credential_boundary": { "const": "none" } } }
+        },
+        {
+          "if": { "properties": { "sandbox_level": { "enum": ["isolated", "read-only"] } }, "required": ["sandbox_level"] },
+          "then": { "properties": { "credential_boundary": { "const": "enforced" } } }
+        }
+      ]
+    }
+  }
 }

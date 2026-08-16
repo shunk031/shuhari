@@ -33,10 +33,10 @@ type BenchmarkSummary struct {
 }
 
 type Benchmark struct {
-	SchemaVersion     string                    `json:"schema_version"`
-	Security          harness.ExecutionSecurity `json:"security"`
-	RunSummary        BenchmarkSummary          `json:"run_summary"`
-	AssertionAnalysis []AssertionAnalysis       `json:"assertion_analysis"`
+	SchemaVersion     string                     `json:"schema_version"`
+	Security          harness.SecurityResolution `json:"security"`
+	RunSummary        BenchmarkSummary           `json:"run_summary"`
+	AssertionAnalysis []AssertionAnalysis        `json:"assertion_analysis"`
 }
 
 type AssertionAnalysis struct {
@@ -91,7 +91,7 @@ func buildBenchmark(runs []gradedRun) Benchmark {
 	} else {
 		summary.WithInstructions, summary.WithoutInstructions = &with, &without
 	}
-	return Benchmark{SchemaVersion: workspaceSchemaVersion, RunSummary: summary, AssertionAnalysis: analyzeAssertions(runs, withName, withoutName)}
+	return Benchmark{SchemaVersion: benchmarkSchemaVersion, RunSummary: summary, AssertionAnalysis: analyzeAssertions(runs, withName, withoutName)}
 }
 
 type assertionCounts struct {

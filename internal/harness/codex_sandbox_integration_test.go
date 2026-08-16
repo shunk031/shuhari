@@ -22,8 +22,8 @@ func TestCodexDefaultSandboxDeniesChildCredentialReads(t *testing.T) {
 		codexSandboxUnavailable(t, "Codex CLI is not installed")
 	}
 
-	for _, sandbox := range []string{"workspace-write", "read-only"} {
-		t.Run(sandbox, func(t *testing.T) {
+	for _, level := range []SandboxLevel{SandboxIsolated, SandboxReadOnly} {
+		t.Run(string(level), func(t *testing.T) {
 			root, err := os.MkdirTemp("/tmp", "shuhari-sandbox-test-")
 			if err != nil {
 				t.Fatal(err)
@@ -51,7 +51,9 @@ func TestCodexDefaultSandboxDeniesChildCredentialReads(t *testing.T) {
 			}
 
 			t.Setenv("CODEX_HOME", sourceHome)
-			request := Request{WorkDir: workDir, Sandbox: sandbox, Network: true}
+			agent := newCodex(Config{})
+			security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: level, Network: true})
+			request := Request{WorkDir: workDir, Security: security}
 			if err := writeCodexProfile(codexHome, request); err != nil {
 				t.Fatal(err)
 			}
@@ -96,7 +98,7 @@ printf '\nprobe-completed\n'
 				"temporary auth": temporarySecret,
 			} {
 				if strings.Contains(text, secret) {
-					t.Errorf("child command read %s despite the %s profile", name, sandbox)
+					t.Errorf("child command read %s despite the %s profile", name, level)
 				}
 			}
 		})

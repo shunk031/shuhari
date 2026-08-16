@@ -137,7 +137,7 @@ func addEvalFlags(command *cobra.Command, flags *evalFlags) {
 	command.Flags().StringVar(&flags.reasoningEffort, "reasoning-effort", "", "reasoning effort used for evaluated runs")
 	command.Flags().StringVar(&flags.judgeModel, "judge-model", "", "model used for grading (defaults to --model)")
 	command.Flags().StringVar(&flags.judgeReasoningEffort, "judge-reasoning-effort", "", "reasoning effort used for grading")
-	command.Flags().StringVar(&flags.sandbox, "sandbox", "workspace-write", "agent sandbox mode")
+	command.Flags().StringVar(&flags.sandbox, "sandbox", "isolated", "Shuhari sandbox level: isolated, read-only, or unsandboxed")
 	command.Flags().BoolVar(&flags.network, "network", false, "allow network access during evaluated runs")
 	command.Flags().StringVar(&flags.workspace, "workspace", "", "workspace root (defaults beside the target)")
 	command.Flags().IntVar(&flags.trials, "trials", 1, "trials per case and configuration")
@@ -149,7 +149,7 @@ func addEvalFlags(command *cobra.Command, flags *evalFlags) {
 }
 
 func (flags evalFlags) config() eval.Config {
-	return eval.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, JudgeModel: flags.judgeModel, JudgeReasoningEffort: flags.judgeReasoningEffort, Sandbox: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict, NoCache: flags.noCache}
+	return eval.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, JudgeModel: flags.judgeModel, JudgeReasoningEffort: flags.judgeReasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict, NoCache: flags.noCache}
 }
 
 func resolveSkillPaths(arguments []string) ([]string, error) {
