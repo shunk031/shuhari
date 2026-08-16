@@ -37,7 +37,7 @@ func TestExecuteTaskCollectsProductionShapeSymlink(t *testing.T) {
 		&symlinkOutputHarness{},
 		Config{Timeout: time.Second},
 		iteration,
-		runTask{Case: Case{ID: "personal-repository-write", Prompt: "inspect dotfiles"}, Trial: 2, Variant: variantWithoutSkill},
+		runTask{Case: Case{ID: "case-symlink", Prompt: "inspect dotfiles"}, Trial: 2, Variant: variantWithoutSkill},
 	)
 	if err != nil {
 		t.Fatalf("executeTask() rejected agent symlink output: %v", err)

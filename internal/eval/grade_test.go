@@ -271,7 +271,7 @@ func TestJudgeBatchingMatchesPreservedProductionShape(t *testing.T) {
 			t.Fatalf("case-trial %q appears in %d batches", key, count)
 		}
 	}
-	if len(caseBatches["personal-repository-write"]) < 2 {
+	if len(caseBatches["case-c"]) < 2 {
 		t.Fatal("fixture did not exercise the documented per-trial split for one case")
 	}
 }
