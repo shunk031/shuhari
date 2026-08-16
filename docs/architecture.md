@@ -80,6 +80,8 @@ Shuhari exposes neutral security levels. Native agent mode names are adapter det
 
 `credential_boundary: enforced` means model-generated commands cannot read source or temporary agent credentials. `none` makes no such claim. Protected levels require `enforced`; `unsandboxed` records `none` and requires `SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY=1`.
 
+All modes strip known GitHub credential variables from child commands. This is only a mitigation in `unsandboxed`; same-UID commands can still read credential files.
+
 ### Adapter resolution and refusal
 
 An explicit `--sandbox` wins over `SHUHARI_SANDBOX`. `ResolveSecurity` returns one digest-bearing adapter mapping; the engine validates and reuses it for runs, artifacts, and cache keys. `Probe` checks the native sandbox before workspace creation. Unsupported mappings or hosts return `ErrUnsupportedSecurityPolicy`; Shuhari never degrades.
