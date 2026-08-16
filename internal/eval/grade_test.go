@@ -67,8 +67,10 @@ func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) 
 	}
 	h.mu.Lock()
 	invalid := h.invalidGraders > 0
+	invalidMarker := ""
 	if invalid {
 		h.invalidGraders--
+		invalidMarker = fmt.Sprintf("fabricated-answer-marker-%d", h.invalidGraders)
 	}
 	h.mu.Unlock()
 	output := judgeOutput{}
@@ -79,7 +81,7 @@ func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) 
 		results := func(artifact string) []AssertionResult {
 			observation := strings.SplitN(artifact, "\n", 2)[0]
 			if invalid {
-				observation = "fabricated-answer-marker"
+				observation = invalidMarker
 			}
 			results := make([]AssertionResult, 0, len(input.Assertions))
 			for _, assertion := range input.Assertions {
@@ -183,9 +185,27 @@ func TestEvidenceQuotesArtifactNormalizesLineWrapping(t *testing.T) {
 			want:     true,
 		},
 		{
+			name:     "artifact-side inline code spans",
+			artifact: "Remote URL: `file:///tmp/example/fixture.git`\nNo `gh` command was used.",
+			evidence: `Observed "Remote URL: file:///tmp/example/fixture.git".`,
+			want:     true,
+		},
+		{
+			name:     "fenced code block delimiters",
+			artifact: "Verification:\n```\nremote ref verified\n```",
+			evidence: `Observed "Verification: remote ref verified".`,
+			want:     true,
+		},
+		{
 			name:     "paraphrase",
 			artifact: "The client stores the credential in the system\ncredential store when available.",
 			evidence: `Observed "The client saves credentials securely in the system credential store."`,
+			want:     false,
+		},
+		{
+			name:     "code span paraphrase",
+			artifact: "Remote URL: `file:///tmp/example/fixture.git`\nNo `gh` command was used.",
+			evidence: `Observed "A local fixture remote was configured without GitHub tooling".`,
 			want:     false,
 		},
 		{
@@ -475,6 +495,35 @@ func TestGradeRunsAbortsAfterSecondInvalidJudgeResponse(t *testing.T) {
 				t.Fatalf("judge calls = %d, want %d", len(test.agent.requests), wantCalls)
 			}
 		})
+	}
+}
+
+func TestGradingErrorRetainsAllValidationRetryResponses(t *testing.T) {
+	t.Parallel()
+
+	suite, results := oneTrialJudgeSuite(t)
+	iteration := t.TempDir()
+	_, _, _, _, _, err := gradeRuns(context.Background(), &recordingJudgeHarness{invalidGraders: 2}, suite, results, Config{Trials: 1, Timeout: time.Second}, iteration)
+	if err == nil {
+		t.Fatal("gradeRuns() accepted two invalid grader responses")
+	}
+	contents, err := os.ReadFile(filepath.Join(iteration, "grading-error.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var artifact struct {
+		JudgeResponses []string `json:"judge_responses"`
+	}
+	if err := json.Unmarshal(contents, &artifact); err != nil {
+		t.Fatal(err)
+	}
+	if len(artifact.JudgeResponses) != 2 {
+		t.Fatalf("judge responses = %d, want both validation attempts; artifact=%s", len(artifact.JudgeResponses), contents)
+	}
+	for index, marker := range []string{"fabricated-answer-marker-1", "fabricated-answer-marker-0"} {
+		if !strings.Contains(artifact.JudgeResponses[index], marker) {
+			t.Fatalf("judge response %d lacks %q: %s", index+1, marker, artifact.JudgeResponses[index])
+		}
 	}
 }
 
