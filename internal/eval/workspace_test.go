@@ -1,7 +1,11 @@
 package eval
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,5 +175,157 @@ func TestCopyOutputsDoesNotTraverseDirectorySymlink(t *testing.T) {
 	}
 	if strings.Contains(artifact, "outside secret") {
 		t.Fatal("outside directory content reached the grading artifact")
+	}
+}
+
+func TestRenderArtifactUsesMetadataForNonText(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	contents := []byte{'G', 'I', 'T', 0, 0xff, 'P', 'A', 'C', 'K'}
+	path := filepath.Join(outputDir, "repository", "objects.pack")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	artifact, err := renderArtifact(outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(contents)
+	for _, want := range []string{
+		`"path":"repository/objects.pack"`,
+		fmt.Sprintf(`"size":%d`, len(contents)),
+		`"sha256":"` + hex.EncodeToString(digest[:]) + `"`,
+		`"reason":"non-text"`,
+	} {
+		if !strings.Contains(artifact, want) {
+			t.Fatalf("artifact metadata omitted %q: %s", want, artifact)
+		}
+	}
+	if strings.Contains(artifact, string(contents)) {
+		t.Fatal("artifact inlined non-text bytes")
+	}
+}
+
+func TestRenderArtifactUsesMetadataForGitInternals(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	contents := "repositoryformatversion = 0\n"
+	mustWrite(t, filepath.Join(outputDir, "repository", ".git", "config"), contents)
+
+	artifact, err := renderArtifact(outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"path":"repository/.git/config"`, `"reason":"git-internal"`} {
+		if !strings.Contains(artifact, want) {
+			t.Fatalf("artifact metadata omitted %q: %s", want, artifact)
+		}
+	}
+	if strings.Contains(artifact, contents) {
+		t.Fatal("artifact inlined a Git-internal text file")
+	}
+}
+
+func TestRenderArtifactInlinesSmallText(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	contents := "analysis complete\n"
+	mustWrite(t, filepath.Join(outputDir, "result.txt"), contents)
+
+	artifact, err := renderArtifact(outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(artifact, "--- file: result.txt") || !strings.Contains(artifact, strings.TrimSpace(contents)) {
+		t.Fatalf("artifact omitted inline text: %s", artifact)
+	}
+}
+
+func TestRenderArtifactUsesMetadataForOversizedText(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	contents := strings.Repeat("text\n", 14_000)
+	mustWrite(t, filepath.Join(outputDir, "large.txt"), contents)
+
+	artifact, err := renderArtifact(outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"path":"large.txt"`, `"reason":"oversized-text"`} {
+		if !strings.Contains(artifact, want) {
+			t.Fatalf("artifact metadata omitted %q: %s", want, artifact)
+		}
+	}
+	if strings.Contains(artifact, contents) {
+		t.Fatal("artifact inlined oversized text")
+	}
+}
+
+func TestRenderArtifactBoundsAggregateInlineTextAndKeepsResponse(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	response := "final response\n"
+	first := strings.Repeat("a", 40*1024)
+	second := strings.Repeat("b", 40*1024)
+	mustWrite(t, filepath.Join(outputDir, "response.md"), response)
+	mustWrite(t, filepath.Join(outputDir, "a.txt"), first)
+	mustWrite(t, filepath.Join(outputDir, "b.txt"), second)
+
+	artifact, err := renderArtifact(outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(artifact, strings.TrimSpace(response)) {
+		t.Fatal("artifact did not prioritize the final response")
+	}
+	if !strings.Contains(artifact, first) {
+		t.Fatal("artifact did not inline text within the aggregate budget")
+	}
+	if strings.Contains(artifact, second) || !strings.Contains(artifact, `"path":"b.txt"`) || !strings.Contains(artifact, `"reason":"text-budget"`) {
+		t.Fatalf("artifact did not represent excess text as metadata: %s", artifact)
+	}
+}
+
+func TestPackfileDominatedOutputKeepsJudgePromptSmall(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	pack := bytes.Repeat([]byte{0xff, 0x00, 0x80, 0x01}, 212_500)
+	packPath := filepath.Join(outputDir, "repository", ".git", "objects", "pack", "pack-a.pack")
+	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(packPath, pack, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(outputDir, "result.txt"), "done\n")
+
+	artifact, err := renderArtifact(outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyArtifact := fmt.Sprintf("--- file: repository/.git/objects/pack/pack-a.pack (%d bytes) ---\n%s", len(pack), string(pack))
+	before, err := structuredJudgePrompt(graderPrompt, []judgeInput{{ID: "large", Trial: 1, Assertions: []string{"correct"}, A: legacyArtifact, B: "baseline"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := structuredJudgePrompt(graderPrompt, []judgeInput{{ID: "large", Trial: 1, Assertions: []string{"correct"}, A: artifact, B: "baseline"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) <= 1_048_576 {
+		t.Fatalf("legacy-shaped prompt = %d bytes, want over the agent input limit", len(before))
+	}
+	if len(after) >= 10_000 || len(after)*100 >= len(before) {
+		t.Fatalf("metadata prompt did not collapse enough: before=%d after=%d", len(before), len(after))
 	}
 }
