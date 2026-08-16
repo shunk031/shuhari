@@ -1,0 +1,20 @@
+[
+  {
+    "source": "iteration-1/eval-write-cgd-pull-request/with_skill/outputs/response.md",
+    "artifact": "It includes preflight checks, bot attribution rules, safe staging/commit commands, HTTPS push authentication, duplicate-PR protection, and PR-author verification. Command-block syntax was validated with `bash -n`.",
+    "evidence": "Observed \"Command-block syntax was validated with `bash -n`.\"",
+    "valid": true
+  },
+  {
+    "source": "iteration-2/eval-write-cgd-pull-request/without_skill/trials/2/outputs/design-generators-docs-commit-push-pr.md",
+    "artifact": "git remote set-url --push origin \"$REPO_URL\"",
+    "evidence": "It sets \"git remote set-url --push origin \\\"$REPO_URL\\\"\".",
+    "valid": true
+  },
+  {
+    "source": "iteration-1/grading-error.json: write-cgd-pull-request trial-1 with_skill",
+    "artifact": "Before staging, verify the authenticated login and repository push permission. Stop if either check fails.",
+    "evidence": "\"Both checks must pass before any commit, push, or PR write.\"",
+    "valid": false
+  }
+]

@@ -2,44 +2,36 @@
 
 [![CI](https://github.com/shunk031/shuhari/actions/workflows/ci.yml/badge.svg)](https://github.com/shunk031/shuhari/actions/workflows/ci.yml)
 
-[`Shuhari` (守破離)](https://en.wikipedia.org/wiki/Shuhari) evaluates skills and persistent instructions against real coding agents. It follows the [Agent Skills evaluation workflow](https://agentskills.io/skill-creation/evaluating-skills): run each case in a clean context with and without the guidance, grade assertions with evidence, and retain outputs, timing, and aggregate statistics in an iteration workspace.
+[`Shuhari` (守破離)](https://en.wikipedia.org/wiki/Shuhari) evaluates skills and persistent instructions against real coding agents, following the [Agent Skills evaluation workflow](https://agentskills.io/skill-creation/evaluating-skills).
 
 ## Supported agents
 
-- [x] [Codex CLI](https://developers.openai.com/codex/): install `codex`, put it on your `PATH`, and sign in with `codex login` before running Shuhari.
+- [x] [Codex CLI](https://developers.openai.com/codex/): install `codex`, put it on your `PATH`, and sign in with `codex login`.
 - [ ] Claude Code
 - [ ] Gemini CLI
 - [ ] Antigravity
 
-Each agent is integrated through a narrow adapter; eval schemas, workspace artifacts, and repository policy stay the same across agents. The unchecked agents are candidates, not commitments. See the [development architecture contract](docs/architecture.md) for what an adapter must provide.
+Adapters are narrow; eval schemas and workspace artifacts stay the same across agents. See the [development architecture contract](docs/architecture.md).
 
 ## Install
 
 ### GitHub Releases
 
-Tagged releases publish prebuilt archives for Linux, macOS, and Windows on the [GitHub Releases page](https://github.com/shunk031/shuhari/releases). Download the archive for your operating system and architecture, extract `shuhari`, and place it on your `PATH`.
+Download a prebuilt archive from the [releases page](https://github.com/shunk031/shuhari/releases) and place `shuhari` on your `PATH`.
 
 ### Go
-
-Install from source with Go:
 
 ```sh
 go install github.com/shunk031/shuhari/cmd/shuhari@latest
 ```
 
-Make sure the Go binary directory, normally `$(go env GOPATH)/bin`, is on your `PATH`.
-
 ### mise
-
-Install a GitHub release with the [mise GitHub backend](https://mise.jdx.dev/dev-tools/backends/github.html):
 
 ```sh
 mise use -g github:shunk031/shuhari
 ```
 
 ## How to Use
-
-Shuhari groups output evaluation and trigger checks as sibling commands:
 
 - `shuhari eval` compares results with and without guidance, following the [Agent Skills evaluation workflow](https://agentskills.io/skill-creation/evaluating-skills).
   - `shuhari eval skill <skill-path-or-file>...`
@@ -48,8 +40,6 @@ Shuhari groups output evaluation and trigger checks as sibling commands:
   - `shuhari check trigger <skill-path>`
 
 ### Evaluate a skill
-
-#### Prepare the cases
 
 Place `evals/evals.json` inside the skill directory:
 
@@ -71,73 +61,38 @@ Place `evals/evals.json` inside the skill directory:
 }
 ```
 
-`prompt`, `expected_output`, and `files` follow the [Agent Skills guide](https://agentskills.io/skill-creation/evaluating-skills). Add `assertions` after inspecting the first run; when they are omitted, Shuhari grades the human-readable `expected_output`. File paths are relative to the skill root and cannot escape it.
-
-#### Run the evaluation and read the workspace
+Then run:
 
 ```sh
 shuhari eval skill path/to/csv-analyzer
 ```
 
-Each case runs in fresh temporary Git repositories. The candidate has the skill installed; the baseline does not. An assertion grader evaluates both output artifacts. A separate blind comparator receives the original task and chooses the more useful result without knowing which variant it represents.
-
-By default, Shuhari writes an iteration workspace beside the skill:
+Each case runs with and without the skill in fresh sandboxed workspaces, a grader checks the assertions with evidence, and a blind comparator picks the more useful output. Results land in an iteration workspace next to the skill:
 
 ```text
 csv-analyzer-workspace/
 └── iteration-1/
     ├── eval-1/
     │   ├── comparison.json
-    │   ├── with_skill/
-    │   │   ├── outputs/
-    │   │   ├── transcript.jsonl
-    │   │   ├── timing.json
-    │   │   └── grading.json
+    │   ├── with_skill/    # outputs/, transcript.jsonl, timing.json, grading.json
     │   └── without_skill/
-    │       └── ...
-    ├── benchmark.json
-    └── manifest.json
+    ├── benchmark.json     # pass rates, deltas, assertion audit
+    └── manifest.json      # input/runner/judge identities
 ```
 
-With multiple trials, trial 1 occupies the canonical path above and later trials are stored under `trials/<N>/`.
-
-- `benchmark.json` contains pass-rate, time, and token statistics, with-minus-without deltas, and deterministic assertion audit categories.
-- `manifest.json` lets you check whether the inputs, runner, agent settings, or judge prompts changed before comparing two iterations.
-- Checked-in JSON Schemas under [`schemas/`](schemas/) define the input and durable artifact contracts.
+Artifact contracts are the JSON Schemas under [`schemas/`](schemas/).
 
 ### Evaluate instructions
 
-#### Prepare the cases
-
-Instructions use the same run, grade, and aggregate flow. By default, `AGENTS.md` is paired with `AGENTS.evals.json` in the same directory:
-
-```json
-{
-  "instructions_name": "project-guidance",
-  "evals": [
-    {
-      "id": "verification",
-      "prompt": "Implement the requested change.",
-      "expected_output": "The response reports the relevant verification.",
-      "assertions": ["The response identifies the verification that was run."]
-    }
-  ]
-}
-```
-
-Use `--evals <path>` when the eval file is elsewhere.
-
-#### Run the evaluation
+Pair `AGENTS.md` with `AGENTS.evals.json` (same case format), or point elsewhere with `--evals`:
 
 ```sh
 shuhari eval instructions path/to/AGENTS.md
 ```
 
-The workspace uses `with_instructions` and `without_instructions` variants.
-
 ### Check skill triggers
 
-Trigger cases are deliberately separate from output-quality evals. Store them in `evals/triggers.json`:
+Put positive cases and near-miss negative controls in `evals/triggers.json`:
 
 ```json
 {
@@ -157,40 +112,15 @@ Trigger cases are deliberately separate from output-quality evals. Store them in
 }
 ```
 
-Both positive cases and negative controls are required. Positive cases pass by per-case trial majority; a negative control fails if the skill is read even once. `--strict-all-trials` also requires every positive trial to trigger.
-
 ```sh
 shuhari check trigger path/to/csv-analyzer --trials 3 --jobs 2 --timeout 600
 ```
 
-## Configure evaluation runs
+Positive cases pass by per-case trial majority; a negative control fails on a single read.
 
-Runs are sandboxed and offline by default, whichever agent executes them: evaluated commands can write only inside the evaluation workspace, and credentials stay outside their reach. Each adapter maps these guarantees onto its agent's native sandbox settings. Enable network access only for cases that need it:
+### Add a repository gate
 
-```sh
-shuhari eval skill path/to/skill --network
-```
-
-Successful runs are cached, so re-running an unchanged evaluation is instant; any change to the inputs, policy, agent identity, or judge prompts invalidates the cache, and `manifest.json` records those identities. Failed runs are never cached and keep their error evidence and per-run artifacts in the iteration workspace. Use `--no-cache` to force a fresh run.
-
-Two advanced mechanisms have their own reference documentation:
-
-- Credential handling: for each run, Shuhari copies the agent's existing login and settings into a private temporary directory for the agent client, then deletes that directory; in sandboxed runs, evaluated commands run in a separate minimal environment that cannot read it, while the unsandboxed override described below removes that protection. Shuhari never keeps a persistent credential store or manages the login itself. See the [credential boundary](docs/architecture.md#credential-boundary).
-- `required_actions`: an optional per-case contract that requires observed actions such as `web_search`, `github_search`, or `file_change` in every trial. See [action evidence](docs/architecture.md#action-evidence) for what counts as evidence and how ordering is matched.
-
-On hosts where the agent's own sandbox cannot start but the surrounding environment already provides isolation (for example, an isolated CI runner or container), the sandbox can be disabled explicitly. The override values are the agent adapter's native sandbox levels; with the Codex adapter:
-
-```sh
-SHUHARI_SANDBOX=danger-full-access \
-SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY=1 \
-shuhari eval skill path/to/skill
-```
-
-Disabling the sandbox removes the agent's filesystem and network boundary, so Shuhari refuses to start without the acknowledgement variable and labels the resulting verdict artifacts with `credential_boundary: none`. The [credential boundary](docs/architecture.md#credential-boundary) documentation explains exactly what protection remains in this mode.
-
-## Add a repository gate
-
-Shuhari implements the portable evaluation mechanism; each consuming repository decides when it runs and with what policy. A typical setup invokes Shuhari from a [pre-commit](https://github.com/pre-commit/pre-commit) hook or a CI job. The repository owns file selection and policy values such as trials, concurrency, timeout, and network access, and it owns skip conventions such as pre-commit's `SKIP` environment variable. Write those values explicitly in the hook or job definition instead of relying on defaults:
+Shuhari owns the evaluation mechanism; your repository owns file selection and policy values. Write them explicitly in a [pre-commit](https://github.com/pre-commit/pre-commit) hook or CI job:
 
 ```yaml
 - repo: local
@@ -201,16 +131,21 @@ Shuhari implements the portable evaluation mechanism; each consuming repository 
       language: system
       files: ^skills/.+/(SKILL\.md|evals/.+)$
       pass_filenames: true
-
-    - id: skill-trigger
-      name: check skill triggers
-      entry: shuhari check trigger skills/csv-analyzer --trials 3 --jobs 2 --timeout 600
-      language: system
-      files: ^skills/csv-analyzer/(SKILL\.md|evals/triggers\.json)$
-      pass_filenames: false
 ```
 
-Changed files passed to `eval skill` are resolved to the nearest `SKILL.md` and deduplicated. Use `--validate-only` for a fast schema and fixture check that does not start an agent. The hook consumes Shuhari's exit status: `0` is a pass, `1` is an evaluation or trigger-policy failure, and `2` is invalid input or an execution error.
+Exit status: `0` pass, `1` evaluation or trigger failure, `2` invalid input or execution error. Use `--validate-only` for a fast schema check without an agent.
+
+### Configure evaluation runs
+
+Runs are sandboxed and offline by default; pass `--network` for cases that need it. Successful runs are cached (`--no-cache` forces a fresh run); failures keep their evidence and are never cached.
+
+Credential handling and the `required_actions` contract are documented in the [architecture contract](docs/architecture.md#credential-boundary). If the agent's sandbox cannot start but the environment is already isolated (a CI runner or container), disable it explicitly — Shuhari refuses this without the acknowledgement and labels the verdict:
+
+```sh
+SHUHARI_SANDBOX=danger-full-access \
+SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY=1 \
+shuhari eval skill path/to/skill
+```
 
 ## License
 
