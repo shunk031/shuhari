@@ -27,16 +27,16 @@ Two integration boundaries remain open. The staged-target wrapper that maps pre-
 ## Packages
 
 ```text
-cmd/shuhari
-    └── internal/cli
-        ├── internal/eval
-        │   ├── internal/skill
-        │   ├── internal/harness
-        │   └── internal/cache
-        └── internal/trigger
-            ├── internal/skill
-            ├── internal/harness
-            └── internal/cache
+.
+├── cmd/shuhari/
+└── internal/
+    ├── cache/
+    ├── cli/
+    ├── eval/
+    │   └── prompts/
+    ├── harness/
+    ├── skill/
+    └── trigger/
 ```
 
 - `cmd/shuhari` is the executable entry point and receives the release version through linker flags.
