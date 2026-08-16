@@ -3,6 +3,8 @@
 [![CI](https://github.com/shunk031/shuhari/actions/workflows/ci.yml/badge.svg)](https://github.com/shunk031/shuhari/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/shunk031/shuhari/graph/badge.svg?token=AA5SJ5448K)](https://codecov.io/github/shunk031/shuhari)
 
+![Shuhari evaluation pipeline](.github/assets/shuhari-header.png)
+
 [`Shuhari` (守破離)](https://en.wikipedia.org/wiki/Shuhari) evaluates skills and persistent instructions against real coding agents, following the [Agent Skills evaluation workflow](https://agentskills.io/skill-creation/evaluating-skills).
 
 ## Supported agents
