@@ -221,8 +221,9 @@ func TestCodexCommandEnvironmentStripsGitHubCredentials(t *testing.T) {
 		codexSandboxUnavailable(t, "Codex CLI is not installed")
 	}
 
-	for _, sandbox := range []string{"workspace-write", "read-only", "danger-full-access"} {
-		t.Run(sandbox, func(t *testing.T) {
+	t.Setenv(NoCredentialBoundaryAcknowledgementEnv, "1")
+	for _, level := range []SandboxLevel{SandboxIsolated, SandboxReadOnly, SandboxUnsandboxed} {
+		t.Run(string(level), func(t *testing.T) {
 			root, err := os.MkdirTemp("/tmp", "shuhari-env-test-")
 			if err != nil {
 				t.Fatal(err)
@@ -234,7 +235,9 @@ func TestCodexCommandEnvironmentStripsGitHubCredentials(t *testing.T) {
 			if err := os.MkdirAll(codexHome, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := writeCodexProfile(codexHome, Request{WorkDir: workDir, Sandbox: sandbox, Network: true}); err != nil {
+			agent := newCodex(Config{})
+			security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: level, Network: true})
+			if err := writeCodexProfile(codexHome, Request{WorkDir: workDir, Security: security}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -251,7 +254,7 @@ func TestCodexCommandEnvironmentStripsGitHubCredentials(t *testing.T) {
 			}
 
 			arguments := []string{"sandbox", "--profile", "shuhari", "--cd", workDir}
-			if sandbox == "danger-full-access" {
+			if level == SandboxUnsandboxed {
 				arguments = append(arguments, "--permission-profile", ":danger-full-access")
 			} else {
 				arguments = append(arguments, "--permission-profile", "shuhari-eval")
@@ -278,7 +281,7 @@ func TestCodexCommandEnvironmentStripsGitHubCredentials(t *testing.T) {
 				t.Fatalf("run Codex command environment probe: %v\n%s", err, failureOutput)
 			}
 			if strings.TrimSpace(string(output)) != "" {
-				t.Fatalf("evaluated command received GitHub credential variables in %s mode:\n%s", sandbox, output)
+				t.Fatalf("evaluated command received GitHub credential variables in %s mode:\n%s", level, output)
 			}
 		})
 	}

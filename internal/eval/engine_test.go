@@ -454,7 +454,7 @@ type invalidSecurityHarness struct{ fakeHarness }
 
 func (*invalidSecurityHarness) ResolveSecurity(_ context.Context, policy harness.SecurityPolicy) (harness.SecurityResolution, error) {
 	resolution := fakeSecurityResolution(policy)
-	resolution.SandboxLevel = harness.SandboxReadOnly
+	resolution.Adapter.PolicyDigest = "x"
 	return resolution, nil
 }
 
