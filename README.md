@@ -22,6 +22,8 @@ Download the archive for your platform from the [releases page](https://github.c
 
 ### Go
 
+Requires Go 1.24 or newer:
+
 ```sh
 go install github.com/shunk031/shuhari/cmd/shuhari@latest
 ```
@@ -134,7 +136,7 @@ Shuhari owns the evaluation mechanism; your repository owns file selection and p
       pass_filenames: true
 ```
 
-Exit status: `0` pass, `1` evaluation or trigger failure, `2` invalid input or execution error. Use `--validate-only` for a fast schema check without an agent.
+Exit status: `0` pass, `1` evaluation or trigger failure, `2` invalid input or execution error. All three commands support `--validate-only` for a fast schema check without an agent.
 
 ### Configure evaluation runs
 
