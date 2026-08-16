@@ -72,6 +72,15 @@ type rawJudgeEvidence struct {
 	Comparator string `json:"comparator"`
 }
 
+type judgeRetryError struct {
+	cause     error
+	responses []string
+}
+
+func (e *judgeRetryError) Error() string { return e.cause.Error() }
+
+func (e *judgeRetryError) Unwrap() error { return e.cause }
+
 type trialJudgeInputs struct {
 	ID         string
 	Trial      int
@@ -251,6 +260,7 @@ func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs [
 
 func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, validate func(string) error) (string, error) {
 	var response string
+	responses := make([]string, 0, 2)
 	var validationErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		attemptInstructions := instructions
@@ -259,7 +269,11 @@ func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, ins
 		}
 		var err error
 		response, err = runStructuredJudge(ctx, agent, attemptInstructions, input, schema, config)
+		responses = append(responses, response)
 		if err != nil {
+			if len(responses) > 1 {
+				return response, &judgeRetryError{cause: err, responses: responses}
+			}
 			return response, err
 		}
 		validationErr = validate(response)
@@ -267,7 +281,7 @@ func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, ins
 			return response, nil
 		}
 	}
-	return response, validationErr
+	return response, &judgeRetryError{cause: validationErr, responses: responses}
 }
 
 func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config) (string, error) {
@@ -429,6 +443,7 @@ func decodeQuotedObservation(value string) string {
 func normalizeEvidenceText(value string) string {
 	value = strings.ReplaceAll(value, "\r\n", "\n")
 	value = strings.ReplaceAll(value, "\\\n", " ")
+	value = strings.ReplaceAll(value, "`", "")
 	return strings.Join(strings.Fields(value), " ")
 }
 
@@ -499,14 +514,20 @@ func persistGradingError(iteration, stage, grader, comparator string, mappings m
 	if iteration == "" {
 		return
 	}
+	var responses []string
+	var retryError *judgeRetryError
+	if errors.As(cause, &retryError) {
+		responses = retryError.responses
+	}
 	_ = writeJSON(filepath.Join(iteration, "grading-error.json"), struct {
 		SchemaVersion string                  `json:"schema_version"`
 		Stage         string                  `json:"stage"`
 		Error         string                  `json:"error"`
 		Grader        string                  `json:"grader_response,omitempty"`
 		Comparator    string                  `json:"comparator_response,omitempty"`
+		Responses     []string                `json:"judge_responses,omitempty"`
 		Mappings      map[string]blindMapping `json:"blind_mappings"`
-	}{SchemaVersion: workspaceSchemaVersion, Stage: stage, Error: cause.Error(), Grader: grader, Comparator: comparator, Mappings: mappings})
+	}{SchemaVersion: workspaceSchemaVersion, Stage: stage, Error: cause.Error(), Grader: grader, Comparator: comparator, Responses: responses, Mappings: mappings})
 }
 
 func runKey(id string, trial int, variant string) string {
