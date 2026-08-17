@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -9,6 +10,7 @@ const (
 	evidenceGroundingStrong        = "strong"
 	evidenceGroundingParaphrase    = "paraphrase"
 	evidenceGroundingAbsence       = "absence"
+	evidenceGroundingContradiction = "contradiction"
 	evidenceGroundingHallucination = "hallucination"
 	evidenceGroundingNotApplicable = "not_applicable"
 
@@ -19,6 +21,7 @@ const (
 
 var groundingTokenPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)
 var absenceAssertionCuePattern = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:not|no|never|without|absent|absence|lack|lacks|free[[:space:]]+of|exclude|excluding|doesn.t|do[[:space:]]+not|cannot|can.t)(?:$|[^\p{L}\p{N}])`)
+var artifactFileHeaderPattern = regexp.MustCompile(`^--- file: (.+) \([0-9]+ bytes\) ---$`)
 
 var absenceClauseBoundaryPattern = regexp.MustCompile(`(?i)\s+(?:and|but|while)\s+|[.!?;]+`)
 
@@ -75,10 +78,49 @@ func groundAbsence(claim *AbsenceClaim, artifact string) evidenceGrounding {
 	if query == "" || len(tokenizeGroundingText(query)) == 0 {
 		return evidenceGrounding{Kind: evidenceGroundingHallucination}
 	}
-	if strings.Contains(strings.ToLower(normalizeEvidenceText(artifact)), strings.ToLower(query)) {
-		return evidenceGrounding{Kind: evidenceGroundingHallucination, Observation: query}
+	if match, ok := findArtifactQuery(query, artifact); ok {
+		return evidenceGrounding{
+			Kind:        evidenceGroundingContradiction,
+			Score:       1,
+			Span:        match.Span,
+			Observation: match.Observation,
+		}
 	}
 	return evidenceGrounding{Kind: evidenceGroundingAbsence, Score: 1, Observation: query}
+}
+
+type artifactQueryMatch struct {
+	Span        string
+	Observation string
+}
+
+func findArtifactQuery(query, artifact string) (artifactQueryMatch, bool) {
+	normalizedQuery := strings.ToLower(normalizeEvidenceText(query))
+	if normalizedQuery == "" {
+		return artifactQueryMatch{}, false
+	}
+
+	currentFile := ""
+	sourceLine := 0
+	for artifactLine, rawLine := range strings.Split(artifact, "\n") {
+		line := strings.TrimSuffix(rawLine, "\r")
+		if header := artifactFileHeaderPattern.FindStringSubmatch(line); header != nil {
+			currentFile = header[1]
+			sourceLine = 0
+		} else if currentFile != "" {
+			sourceLine++
+		}
+		if !strings.Contains(strings.ToLower(normalizeEvidenceText(line)), normalizedQuery) {
+			continue
+		}
+
+		location := fmt.Sprintf("artifact:%d", artifactLine+1)
+		if currentFile != "" && !artifactFileHeaderPattern.MatchString(line) {
+			location = fmt.Sprintf("%s:%d", currentFile, sourceLine)
+		}
+		return artifactQueryMatch{Span: location, Observation: strings.TrimSpace(line)}, true
+	}
+	return artifactQueryMatch{}, false
 }
 
 func supportsAbsenceClaim(assertion string, query string) bool {

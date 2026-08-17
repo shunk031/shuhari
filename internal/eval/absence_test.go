@@ -53,6 +53,81 @@ func TestBuildGradingAcceptsAbsenceClaimForMixedAssertion(t *testing.T) {
 	}
 }
 
+func TestBuildGradingResolvesContradictedAbsenceAsFailed(t *testing.T) {
+	t.Parallel()
+
+	assertion := "The response does not use gh auth switch as the runtime account-selection mechanism."
+	artifact := `
+--- file: prepare-cgd-auth.sh (1236 bytes) ---
+#!/usr/bin/env bash
+set -euo pipefail
+
+expected_account="creative-graphic-design-dev"
+github_host="github.com"
+cgd_repo="creative-graphic-design/design-generators"
+
+if ! command -v gh >/dev/null 2>&1; then
+  printf '%s\n' "GitHub CLI (gh) is required. Install it, then rerun this script." >&2
+  exit 1
+fi
+
+printf '%s\n' "Opening GitHub's supported browser authentication flow..."
+gh auth login \
+  --hostname "$github_host" \
+  --git-protocol https \
+  --web
+
+actual_account="$(gh api user --jq '.login')"
+if [[ "$actual_account" != "$expected_account" ]]; then
+  if gh auth switch --hostname "$github_host" --user "$expected_account" >/dev/null 2>&1; then
+    actual_account="$(gh api user --jq '.login')"
+  fi
+fi
+
+if [[ "$actual_account" != "$expected_account" ]]; then
+  printf '%s\n' "Authenticated as '$actual_account'; expected '$expected_account'." >&2
+  printf '%s\n' "Run: gh auth switch --hostname github.com --user $expected_account" >&2
+  exit 1
+fi
+
+gh auth setup-git --hostname "$github_host"
+gh auth status --hostname "$github_host"
+gh repo view "$cgd_repo" --json nameWithOwner,viewerPermission,url \
+  --jq '{nameWithOwner, viewerPermission, url}'
+
+printf '%s\n' "CGD authentication is ready for HTTPS repository work."
+`
+	grading, err := buildGrading(
+		[]string{assertion},
+		[]AssertionResult{{
+			Text:     assertion,
+			Passed:   true,
+			Evidence: "\"Configured `creative-graphic-design-dev` authentication via GitHub CLI with HTTPS Git credentials. It contains no gh auth switch command.\"",
+			Absence:  &AbsenceClaim{Query: "gh auth switch"},
+		}},
+		artifact,
+	)
+	if err != nil {
+		t.Fatalf("buildGrading() rejected deterministic contradiction: %v", err)
+	}
+	result := grading.AssertionResults[0]
+	if result.Passed {
+		t.Fatal("contradicted absence assertion remained passed")
+	}
+	if result.EvidenceGrounding != evidenceGroundingContradiction {
+		t.Fatalf("contradiction grounding = %q, want %q", result.EvidenceGrounding, evidenceGroundingContradiction)
+	}
+	if result.EvidenceGroundingSpan != "prepare-cgd-auth.sh:21" {
+		t.Fatalf("contradiction span = %q, want prepare-cgd-auth.sh:21", result.EvidenceGroundingSpan)
+	}
+	if result.EvidenceGroundingObservation != "if gh auth switch --hostname \"$github_host\" --user \"$expected_account\" >/dev/null 2>&1; then" {
+		t.Fatalf("contradiction observation = %q", result.EvidenceGroundingObservation)
+	}
+	if grading.Summary.Passed != 0 || grading.Summary.Failed != 1 {
+		t.Fatalf("summary = %#v, want one failed assertion", grading.Summary)
+	}
+}
+
 func TestBuildGradingRejectsUnmatchedMixedAssertionAbsenceClaim(t *testing.T) {
 	t.Parallel()
 
@@ -81,7 +156,6 @@ func TestBuildGradingRejectsAmbiguousAbsenceClaim(t *testing.T) {
 		claim    *AbsenceClaim
 		evidence string
 	}{
-		{name: "query present", artifact: "the artifact contains document review step", claim: &AbsenceClaim{Query: "document review step"}, evidence: `No occurrence of "document review step" appears in the artifact.`},
 		{name: "blank query", artifact: "code only", claim: &AbsenceClaim{}, evidence: `No occurrence of "document review step" appears in the artifact.`},
 		{name: "unstructured absence", artifact: "code only", evidence: `The response contains no "document review step".`},
 		{name: "positive assertion cannot opt into absence", artifact: "code only", claim: &AbsenceClaim{Query: "document review step"}, evidence: `No occurrence of "document review step" appears in the artifact.`},

@@ -617,8 +617,13 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 					return Grading{}, fmt.Errorf("%w: absence claim does not match a negated assertion %q", errInvalidGrading, assertion)
 				}
 				grounding = groundAbsence(result.Absence, artifact)
+				if grounding.Kind == evidenceGroundingContradiction {
+					// The artifact is authoritative for negative claims. A matching
+					// absence query deterministically disproves the judge's pass.
+					result.Passed = false
+				}
 			}
-			if grounding.Kind == evidenceGroundingHallucination {
+			if result.Passed && grounding.Kind == evidenceGroundingHallucination {
 				return Grading{}, fmt.Errorf("%w: passing assertion %q lacks grounded evidence in the artifact", errInvalidGrading, assertion)
 			}
 			result.EvidenceGrounding = grounding.Kind
