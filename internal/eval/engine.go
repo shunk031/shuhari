@@ -263,7 +263,13 @@ func executeTask(ctx context.Context, suite Suite, agent harness.Harness, config
 	prompt := buildRunPrompt(task.Case, files, outputDir, target)
 	result, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: prompt, Target: target, Model: config.Model, ReasoningEffort: config.ReasoningEffort, Sandbox: config.Sandbox, Network: config.Network, Timeout: config.Timeout})
 	if err != nil {
-		return runResult{}, fmt.Errorf("%s trial %d %s: %w", task.Case.ID, task.Trial, task.Variant, err)
+		runErr := fmt.Errorf("%s trial %d %s: %w", task.Case.ID, task.Trial, task.Variant, err)
+		if attempts := harness.AttemptsFromError(err); attempts.AttemptCount > 0 {
+			if writeErr := writeRunTiming(runDir, harness.Usage{}, 0, attempts); writeErr != nil {
+				return runResult{}, errors.Join(runErr, writeErr)
+			}
+		}
+		return runResult{}, runErr
 	}
 	artifactDir := filepath.Join(runDir, "outputs")
 	if err := copyOutputs(outputDir, artifactDir); err != nil {
@@ -275,11 +281,7 @@ func executeTask(ctx context.Context, suite Suite, agent harness.Harness, config
 	if err := os.WriteFile(filepath.Join(runDir, "transcript.jsonl"), result.Transcript, 0o644); err != nil {
 		return runResult{}, fmt.Errorf("write transcript: %w", err)
 	}
-	timing := struct {
-		TotalTokens int64 `json:"total_tokens"`
-		DurationMS  int64 `json:"duration_ms"`
-	}{TotalTokens: result.Usage.TotalTokens(), DurationMS: result.Duration.Milliseconds()}
-	if err := writeJSON(filepath.Join(runDir, "timing.json"), timing); err != nil {
+	if err := writeRunTiming(runDir, result.Usage, result.Duration, result.Attempts); err != nil {
 		return runResult{}, err
 	}
 	artifact, err := renderArtifact(artifactDir)
@@ -287,6 +289,18 @@ func executeTask(ctx context.Context, suite Suite, agent harness.Harness, config
 		return runResult{}, err
 	}
 	return runResult{Case: task.Case, Trial: task.Trial, Variant: task.Variant, RunDir: runDir, Agent: result, OutputPath: artifactDir, Artifact: artifact}, nil
+}
+
+func writeRunTiming(runDir string, usage harness.Usage, duration time.Duration, attempts harness.AttemptEvidence) error {
+	if attempts.AttemptCount == 0 {
+		attempts.AttemptCount = 1
+	}
+	timing := struct {
+		TotalTokens int64 `json:"total_tokens"`
+		DurationMS  int64 `json:"duration_ms"`
+		harness.AttemptEvidence
+	}{TotalTokens: usage.TotalTokens(), DurationMS: duration.Milliseconds(), AttemptEvidence: attempts}
+	return writeJSON(filepath.Join(runDir, "timing.json"), timing)
 }
 
 func buildRunPrompt(item Case, files []string, outputDir string, target *harness.Target) string {

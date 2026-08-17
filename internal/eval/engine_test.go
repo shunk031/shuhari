@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,7 @@ type fakeHarness struct {
 	judgeResponse   string
 	compareResponse string
 	requests        []harness.Request
+	runAttempts     harness.AttemptEvidence
 }
 
 type limitedHarness struct {
@@ -62,7 +64,57 @@ func (h *fakeHarness) Run(_ context.Context, request harness.Request) (harness.R
 	if request.Target != nil {
 		response = "candidate output"
 	}
-	return harness.Result{Response: response, Transcript: []byte("{}\n"), Duration: 10 * time.Millisecond, Usage: harness.Usage{InputTokens: 10, OutputTokens: 5}, Actions: []harness.Action{harness.ActionWebSearch, harness.ActionFileChange}}, nil
+	return harness.Result{Response: response, Transcript: []byte("{}\n"), Duration: 10 * time.Millisecond, Usage: harness.Usage{InputTokens: 10, OutputTokens: 5}, Attempts: h.runAttempts, Actions: []harness.Action{harness.ActionWebSearch, harness.ActionFileChange}}, nil
+}
+
+func TestExecuteTaskPersistsTransportRetryEvidence(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
+	suite := Suite{Kind: harness.TargetSkill, Name: "demo", Root: root, TargetPath: root}
+	iteration := t.TempDir()
+	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "stream disconnected before completion"}}}
+	_, err := executeTask(context.Background(), suite, &fakeHarness{runAttempts: attempts}, Config{Timeout: time.Second}, iteration, runTask{Case: Case{ID: "one", Prompt: "task"}, Trial: 1, Variant: variantWithSkill})
+	if err != nil {
+		t.Fatalf("executeTask() error = %v", err)
+	}
+	contents, err := os.ReadFile(filepath.Join(iteration, "eval-one", variantWithSkill, "timing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), `"attempt_count": 2`) || !strings.Contains(string(contents), "stream disconnected before completion") {
+		t.Fatalf("timing artifact lacks retry evidence: %s", contents)
+	}
+}
+
+type exhaustedRetryHarness struct{ fakeHarness }
+
+func (h *exhaustedRetryHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
+	if len(request.OutputSchema) > 0 {
+		return h.fakeHarness.Run(context.Background(), request)
+	}
+	attempts := harness.AttemptEvidence{AttemptCount: 3, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "disconnect one"}, {Attempt: 2, Error: "disconnect two"}, {Attempt: 3, Error: "disconnect three"}}}
+	return harness.Result{}, &harness.RetryError{Cause: fmt.Errorf("%w: disconnect three", harness.ErrTransient), Attempts: attempts}
+}
+
+func TestExecuteTaskPersistsExhaustedTransportAttempts(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
+	iteration := t.TempDir()
+	_, err := executeTask(context.Background(), Suite{Kind: harness.TargetSkill, Name: "demo", Root: root, TargetPath: root}, &exhaustedRetryHarness{}, Config{Timeout: time.Second}, iteration, runTask{Case: Case{ID: "one", Prompt: "task"}, Trial: 1, Variant: variantWithSkill})
+	if err == nil || !errors.Is(err, harness.ErrTransient) {
+		t.Fatalf("executeTask() error = %v, want transport failure", err)
+	}
+	contents, readErr := os.ReadFile(filepath.Join(iteration, "eval-one", variantWithSkill, "timing.json"))
+	if readErr != nil {
+		t.Fatalf("retry evidence missing: %v", readErr)
+	}
+	if !strings.Contains(string(contents), `"attempt_count": 3`) || !strings.Contains(string(contents), "disconnect one") || !strings.Contains(string(contents), "disconnect three") {
+		t.Fatalf("timing artifact lacks exhausted attempts: %s", contents)
+	}
 }
 
 func TestRunWritesAgentSkillsWorkspaceAndCachesSuccess(t *testing.T) {
@@ -161,6 +213,45 @@ func TestRunWritesAgentSkillsWorkspaceAndCachesSuccess(t *testing.T) {
 	}
 	if benchmark.Security.CredentialBoundary != harness.CredentialBoundaryCodexSandbox {
 		t.Fatalf("benchmark credential boundary = %q", benchmark.Security.CredentialBoundary)
+	}
+}
+
+func TestRunDoesNotRetryCompletedAssertionFailure(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "demo")
+	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
+	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{"skill_name":"demo","evals":[{"id":"one","prompt":"task","expected_output":"correct","assertions":["correct"]}]}`)
+	suite, err := LoadSkillSuite(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping := blindLabels("one", 1, variantWithSkill, variantWithoutSkill)
+	failed := []AssertionResult{{Text: "correct", Passed: false, Evidence: "The expected result is absent."}}
+	grades := map[string][]AssertionResult{variantWithSkill: failed, variantWithoutSkill: failed}
+	grader, _ := json.Marshal(judgeOutput{Cases: []judgeEntry{{ID: "one", Trial: 1, AAssertionResults: grades[mapping.A], BAssertionResults: grades[mapping.B]}}})
+	compared, _ := json.Marshal(comparatorOutput{Cases: []comparatorEntry{{ID: "one", Trial: 1, Preferred: "tie", Reason: "both fail"}}})
+	agent := &fakeHarness{judgeResponse: string(grader), compareResponse: string(compared)}
+	report, err := Run(context.Background(), suite, agent, cache.Store{Root: t.TempDir()}, Config{Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), NoCache: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Passed {
+		t.Fatal("assertion-failing completed runs passed")
+	}
+	executionCalls, judgeCalls := 0, 0
+	for _, request := range agent.requests {
+		if len(request.OutputSchema) == 0 {
+			executionCalls++
+		} else {
+			judgeCalls++
+		}
+	}
+	if executionCalls != 2 {
+		t.Fatalf("completed candidate/baseline execution calls = %d, want exactly two", executionCalls)
+	}
+	if judgeCalls != 2 {
+		t.Fatalf("completed grader/comparator calls = %d, want exactly two", judgeCalls)
 	}
 }
 

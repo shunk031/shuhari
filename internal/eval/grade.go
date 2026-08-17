@@ -77,6 +77,20 @@ type judgeRetryError struct {
 	responses []string
 }
 
+type judgeCallAttempts struct {
+	ValidationAttempt int
+	harness.AttemptEvidence
+}
+
+type judgeTransportRetry struct {
+	Stage             string                 `json:"stage"`
+	CaseID            string                 `json:"case_id"`
+	Trial             int                    `json:"trial"`
+	ValidationAttempt int                    `json:"validation_attempt"`
+	AttemptCount      int                    `json:"attempt_count"`
+	AttemptErrors     []harness.AttemptError `json:"attempt_errors"`
+}
+
 func (e *judgeRetryError) Error() string { return e.cause.Error() }
 
 func (e *judgeRetryError) Unwrap() error { return e.cause }
@@ -117,16 +131,26 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 		}
 	}
 
-	graderEntries, graderResponse, err := runGradersPerTrial(ctx, agent, trialInputs, config)
+	graderEntries, graderResponse, judgeRetries, err := runGradersPerTrial(ctx, agent, trialInputs, config)
 	if err != nil {
+		if writeErr := persistJudgeRetries(iteration, judgeRetries); writeErr != nil {
+			return nil, 0, 0, nil, graderResponse, writeErr
+		}
 		persistGradingError(iteration, "grader", graderResponse, "", mappings, err)
 		return nil, 0, 0, nil, graderResponse, err
 	}
 
-	comparatorEntries, comparatorResponse, err := runComparatorsPerTrial(ctx, agent, trialInputs, config)
+	comparatorEntries, comparatorResponse, comparatorRetries, err := runComparatorsPerTrial(ctx, agent, trialInputs, config)
+	judgeRetries = append(judgeRetries, comparatorRetries...)
 	rawEvidence, _ := json.Marshal(rawJudgeEvidence{Grader: graderResponse, Comparator: comparatorResponse})
 	if err != nil {
+		if writeErr := persistJudgeRetries(iteration, judgeRetries); writeErr != nil {
+			return nil, 0, 0, nil, string(rawEvidence), writeErr
+		}
 		persistGradingError(iteration, "comparator", graderResponse, comparatorResponse, mappings, err)
+		return nil, 0, 0, nil, string(rawEvidence), err
+	}
+	if err := persistJudgeRetries(iteration, judgeRetries); err != nil {
 		return nil, 0, 0, nil, string(rawEvidence), err
 	}
 
@@ -186,14 +210,15 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 	return graded, candidateWins, baselineWins, nil, string(rawEvidence), nil
 }
 
-func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config) (map[string]judgeEntry, string, error) {
+func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config) (map[string]judgeEntry, string, []judgeTransportRetry, error) {
 	merged := judgeOutput{}
 	entries := map[string]judgeEntry{}
+	var retries []judgeTransportRetry
 	for _, item := range inputs {
 		graderInputs := []judgeInput{item.Grader}
 		var output judgeOutput
 		var trialEntries map[string]judgeEntry
-		response, err := runValidatedStructuredJudge(ctx, agent, graderPrompt, graderInputs, graderSchema(), config, func(response string) error {
+		response, attempts, err := runValidatedStructuredJudge(ctx, agent, graderPrompt, graderInputs, graderSchema(), config, func(response string) error {
 			output = judgeOutput{}
 			if err := json.Unmarshal([]byte(response), &output); err != nil {
 				return fmt.Errorf("decode response: %w", err)
@@ -212,8 +237,9 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 			}
 			return nil
 		})
+		retries = append(retries, decorateJudgeAttempts("grader", item.ID, item.Trial, attempts)...)
 		if err != nil {
-			return nil, response, fmt.Errorf("grader case %q trial %d: %w", item.ID, item.Trial, err)
+			return nil, response, retries, fmt.Errorf("grader case %q trial %d: %w", item.ID, item.Trial, err)
 		}
 		for key, entry := range trialEntries {
 			entries[key] = entry
@@ -222,19 +248,20 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 	}
 	encoded, err := json.Marshal(merged)
 	if err != nil {
-		return nil, "", fmt.Errorf("encode grader response: %w", err)
+		return nil, "", retries, fmt.Errorf("encode grader response: %w", err)
 	}
-	return entries, string(encoded), nil
+	return entries, string(encoded), retries, nil
 }
 
-func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config) (map[string]comparatorEntry, string, error) {
+func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config) (map[string]comparatorEntry, string, []judgeTransportRetry, error) {
 	merged := comparatorOutput{}
 	entries := map[string]comparatorEntry{}
+	var retries []judgeTransportRetry
 	for _, item := range inputs {
 		comparatorInputs := []comparatorInput{item.Comparator}
 		var output comparatorOutput
 		var trialEntries map[string]comparatorEntry
-		response, err := runValidatedStructuredJudge(ctx, agent, comparatorPrompt, comparatorInputs, comparatorSchema(), config, func(response string) error {
+		response, attempts, err := runValidatedStructuredJudge(ctx, agent, comparatorPrompt, comparatorInputs, comparatorSchema(), config, func(response string) error {
 			output = comparatorOutput{}
 			if err := json.Unmarshal([]byte(response), &output); err != nil {
 				return fmt.Errorf("decode response: %w", err)
@@ -243,8 +270,9 @@ func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs [
 			trialEntries, err = validateComparatorEntries(output, comparatorInputs)
 			return err
 		})
+		retries = append(retries, decorateJudgeAttempts("comparator", item.ID, item.Trial, attempts)...)
 		if err != nil {
-			return nil, response, fmt.Errorf("comparator case %q trial %d: %w", item.ID, item.Trial, err)
+			return nil, response, retries, fmt.Errorf("comparator case %q trial %d: %w", item.ID, item.Trial, err)
 		}
 		for key, entry := range trialEntries {
 			entries[key] = entry
@@ -253,14 +281,15 @@ func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs [
 	}
 	encoded, err := json.Marshal(merged)
 	if err != nil {
-		return nil, "", fmt.Errorf("encode comparator response: %w", err)
+		return nil, "", retries, fmt.Errorf("encode comparator response: %w", err)
 	}
-	return entries, string(encoded), nil
+	return entries, string(encoded), retries, nil
 }
 
-func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, validate func(string) error) (string, error) {
+func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, validate func(string) error) (string, []judgeCallAttempts, error) {
 	var response string
 	responses := make([]string, 0, 2)
+	var callAttempts []judgeCallAttempts
 	var validationErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		attemptInstructions := instructions
@@ -268,30 +297,34 @@ func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, ins
 			attemptInstructions = strings.TrimSpace(instructions) + "\n\nThe previous response failed validation. Return a corrected response for the original input.\nValidation error: " + validationErr.Error()
 		}
 		var err error
-		response, err = runStructuredJudge(ctx, agent, attemptInstructions, input, schema, config)
+		var attempts harness.AttemptEvidence
+		response, attempts, err = runStructuredJudge(ctx, agent, attemptInstructions, input, schema, config)
+		if attempts.AttemptCount > 1 || len(attempts.AttemptErrors) > 0 {
+			callAttempts = append(callAttempts, judgeCallAttempts{ValidationAttempt: attempt + 1, AttemptEvidence: attempts})
+		}
 		responses = append(responses, response)
 		if err != nil {
 			if len(responses) > 1 {
-				return response, &judgeRetryError{cause: err, responses: responses}
+				return response, callAttempts, &judgeRetryError{cause: err, responses: responses}
 			}
-			return response, err
+			return response, callAttempts, err
 		}
 		validationErr = validate(response)
 		if validationErr == nil {
-			return response, nil
+			return response, callAttempts, nil
 		}
 	}
-	return response, &judgeRetryError{cause: validationErr, responses: responses}
+	return response, callAttempts, &judgeRetryError{cause: validationErr, responses: responses}
 }
 
-func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config) (string, error) {
+func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config) (string, harness.AttemptEvidence, error) {
 	prompt, err := structuredJudgePrompt(instructions, input)
 	if err != nil {
-		return "", err
+		return "", harness.AttemptEvidence{}, err
 	}
 	workDir, err := os.MkdirTemp("", "shuhari-judge-")
 	if err != nil {
-		return "", fmt.Errorf("create judge work directory: %w", err)
+		return "", harness.AttemptEvidence{}, fmt.Errorf("create judge work directory: %w", err)
 	}
 	defer os.RemoveAll(workDir)
 	model := config.JudgeModel
@@ -304,9 +337,27 @@ func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions
 	}
 	judged, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: prompt, Model: model, ReasoningEffort: effort, Sandbox: "read-only", Timeout: config.Timeout, OutputSchema: schema})
 	if err != nil {
-		return judged.Response, fmt.Errorf("run judge; prompt is %d bytes: %w", len(prompt), err)
+		return judged.Response, harness.AttemptsFromError(err), fmt.Errorf("run judge; prompt is %d bytes: %w", len(prompt), err)
 	}
-	return judged.Response, nil
+	return judged.Response, judged.Attempts, nil
+}
+
+func decorateJudgeAttempts(stage, caseID string, trial int, attempts []judgeCallAttempts) []judgeTransportRetry {
+	retries := make([]judgeTransportRetry, 0, len(attempts))
+	for _, item := range attempts {
+		retries = append(retries, judgeTransportRetry{Stage: stage, CaseID: caseID, Trial: trial, ValidationAttempt: item.ValidationAttempt, AttemptCount: item.AttemptCount, AttemptErrors: item.AttemptErrors})
+	}
+	return retries
+}
+
+func persistJudgeRetries(iteration string, retries []judgeTransportRetry) error {
+	if iteration == "" || len(retries) == 0 {
+		return nil
+	}
+	return writeJSON(filepath.Join(iteration, "judge-retries.json"), struct {
+		SchemaVersion string                `json:"schema_version"`
+		Retries       []judgeTransportRetry `json:"retries"`
+	}{SchemaVersion: workspaceSchemaVersion, Retries: retries})
 }
 
 func structuredJudgePrompt(instructions string, input any) (string, error) {

@@ -41,6 +41,46 @@ func TestParseCodexTrace(t *testing.T) {
 	}
 }
 
+func TestParseCodexTraceClassifiesIncompleteTransportError(t *testing.T) {
+	t.Parallel()
+
+	trace := []byte("{\"type\":\"error\",\"message\":\"stream disconnected before completion: error decoding response body\"}\n")
+	_, err := parseCodexTrace(trace, Target{})
+	if err == nil || !errors.Is(err, ErrTransient) {
+		t.Fatalf("parseCodexTrace() error = %v, want transient transport error", err)
+	}
+}
+
+func TestParseCodexTraceDoesNotRetryCompletedAgentMessage(t *testing.T) {
+	t.Parallel()
+
+	trace := []byte("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"completed answer\"}}\n{\"type\":\"error\",\"message\":\"connection reset by peer\"}\n")
+	_, err := parseCodexTrace(trace, Target{})
+	if err == nil {
+		t.Fatal("parseCodexTrace() accepted an error after a completed message")
+	}
+	if errors.Is(err, ErrTransient) {
+		t.Fatalf("completed agent message was classified retryable: %v", err)
+	}
+}
+
+func TestTransportFailurePatterns(t *testing.T) {
+	t.Parallel()
+
+	for _, message := range []string{
+		"stream disconnected before completion: stream closed before response.completed",
+		"Transport error: network error: error decoding response body",
+		"connection reset by peer",
+	} {
+		if !transientPattern.MatchString(message) {
+			t.Errorf("transport error was not classified transient: %q", message)
+		}
+	}
+	if transientPattern.MatchString("input_too_large") {
+		t.Fatal("input_too_large was classified transient")
+	}
+}
+
 func TestParseCodexTraceRequiresSuccessfulSkillReadBeforeResponse(t *testing.T) {
 	t.Parallel()
 	target, skillContents := testSkillTarget(t)
@@ -506,6 +546,7 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_token
 		t.Fatal(err)
 	}
 	agent := newCodex(Config{Executable: script})
+	agent.waitBeforeRetry = noRetryWait
 	result, err := agent.Run(context.Background(), Request{WorkDir: workDir, Prompt: "test", Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -517,6 +558,128 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_token
 		t.Fatalf("contaminated retry artifact survived: %v", err)
 	}
 }
+
+func TestCodexRetriesDisconnectedStreamThenSucceeds(t *testing.T) {
+	t.Parallel()
+
+	capture := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := fmt.Sprintf(`#!/bin/sh
+count_file=%q/count
+count=0
+if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
+count=$((count + 1))
+printf '%%s\n' "$count" > "$count_file"
+if test "$count" = 1; then
+  printf '%%s\n' 'Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)' >&2
+  exit 2
+fi
+printf '%%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"recovered"}}'
+printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1,"reasoning_output_tokens":0}}'
+`, capture)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent := newCodex(Config{Executable: script})
+	agent.waitBeforeRetry = noRetryWait
+	result, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Response != "recovered" {
+		t.Fatalf("response = %q, want recovered", result.Response)
+	}
+	if result.Attempts.AttemptCount != 2 || len(result.Attempts.AttemptErrors) != 1 || !strings.Contains(result.Attempts.AttemptErrors[0].Error, "stream disconnected before completion") {
+		t.Fatalf("attempt evidence = %#v, want one failed transport attempt before success", result.Attempts)
+	}
+	count, err := os.ReadFile(filepath.Join(capture, "count"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(count)) != "2" {
+		t.Fatalf("Codex invocations = %q, want two", strings.TrimSpace(string(count)))
+	}
+}
+
+func TestCodexStopsAfterTwoTransportRetries(t *testing.T) {
+	t.Parallel()
+
+	capture := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := fmt.Sprintf(`#!/bin/sh
+count_file=%q/count
+count=0
+if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
+printf '%%s\n' "$((count + 1))" > "$count_file"
+printf '%%s\n' 'connection reset by peer' >&2
+exit 2
+`, capture)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent := newCodex(Config{Executable: script})
+	var retries []int
+	agent.waitBeforeRetry = func(_ context.Context, retry int) error {
+		retries = append(retries, retry)
+		return nil
+	}
+	_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Timeout: time.Second})
+	if err == nil || !errors.Is(err, ErrTransient) {
+		t.Fatalf("Run() error = %v, want exhausted transient error", err)
+	}
+	count, readErr := os.ReadFile(filepath.Join(capture, "count"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.TrimSpace(string(count)) != "3" {
+		t.Fatalf("Codex invocations = %q, want three", strings.TrimSpace(string(count)))
+	}
+	attempts := AttemptsFromError(err)
+	if attempts.AttemptCount != 3 || len(attempts.AttemptErrors) != 3 {
+		t.Fatalf("attempt evidence = %#v, want all three failed attempts", attempts)
+	}
+	if fmt.Sprint(retries) != "[1 2]" {
+		t.Fatalf("backoff retries = %v, want [1 2]", retries)
+	}
+}
+
+func TestCodexDoesNotRetryCompletedResponse(t *testing.T) {
+	t.Parallel()
+
+	capture := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := fmt.Sprintf(`#!/bin/sh
+count_file=%q/count
+count=0
+if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
+printf '%%s\n' "$((count + 1))" > "$count_file"
+printf '%%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"completed"}}'
+printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1,"reasoning_output_tokens":0}}'
+printf '%%s\n' 'connection reset by peer after completed response' >&2
+exit 2
+`, capture)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent := newCodex(Config{Executable: script})
+	agent.waitBeforeRetry = noRetryWait
+	_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Timeout: time.Second})
+	if err == nil {
+		t.Fatal("Run() accepted a nonzero completed command")
+	}
+	if errors.Is(err, ErrTransient) {
+		t.Fatalf("completed response was classified retryable: %v", err)
+	}
+	count, readErr := os.ReadFile(filepath.Join(capture, "count"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.TrimSpace(string(count)) != "1" {
+		t.Fatalf("Codex invocations = %q, want one completed attempt", strings.TrimSpace(string(count)))
+	}
+}
+
+func noRetryWait(context.Context, int) error { return nil }
 
 func TestCodexDoesNotRetryInputTooLarge(t *testing.T) {
 	t.Parallel()

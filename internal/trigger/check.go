@@ -272,19 +272,33 @@ func executeCase(ctx context.Context, suite Suite, agent harness.Harness, config
 	defer os.RemoveAll(workDir)
 	result, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: item.Prompt, Target: &harness.Target{Kind: harness.TargetSkill, Name: suite.SkillName, SourcePath: suite.SkillPath}, Model: config.Model, ReasoningEffort: config.ReasoningEffort, Sandbox: config.Sandbox, Network: config.Network, Timeout: config.Timeout})
 	if err != nil {
-		return false, fmt.Errorf("%s trial %d: %w", item.ID, trial, err)
+		runErr := fmt.Errorf("%s trial %d: %w", item.ID, trial, err)
+		if attempts := harness.AttemptsFromError(err); attempts.AttemptCount > 0 {
+			if writeErr := writeTriggerTiming(runDir, harness.Usage{}, 0, attempts); writeErr != nil {
+				return false, errors.Join(runErr, writeErr)
+			}
+		}
+		return false, runErr
 	}
 	if err := os.WriteFile(filepath.Join(runDir, "transcript.jsonl"), result.Transcript, 0o644); err != nil {
 		return false, fmt.Errorf("write trigger transcript: %w", err)
 	}
-	timing := struct {
-		TotalTokens int64 `json:"total_tokens"`
-		DurationMS  int64 `json:"duration_ms"`
-	}{TotalTokens: result.Usage.TotalTokens(), DurationMS: result.Duration.Milliseconds()}
-	if err := writeJSON(filepath.Join(runDir, "timing.json"), timing); err != nil {
+	if err := writeTriggerTiming(runDir, result.Usage, result.Duration, result.Attempts); err != nil {
 		return false, err
 	}
 	return result.TargetRead, nil
+}
+
+func writeTriggerTiming(runDir string, usage harness.Usage, duration time.Duration, attempts harness.AttemptEvidence) error {
+	if attempts.AttemptCount == 0 {
+		attempts.AttemptCount = 1
+	}
+	timing := struct {
+		TotalTokens int64 `json:"total_tokens"`
+		DurationMS  int64 `json:"duration_ms"`
+		harness.AttemptEvidence
+	}{TotalTokens: usage.TotalTokens(), DurationMS: duration.Milliseconds(), AttemptEvidence: attempts}
+	return writeJSON(filepath.Join(runDir, "timing.json"), timing)
 }
 
 func casePass(reads []bool, shouldTrigger, strict bool) bool {

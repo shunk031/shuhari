@@ -15,8 +15,9 @@ import (
 )
 
 type triggerHarness struct {
-	mu   sync.Mutex
-	runs int
+	mu       sync.Mutex
+	runs     int
+	attempts harness.AttemptEvidence
 }
 
 func (*triggerHarness) Probe(context.Context) (harness.Identity, error) {
@@ -31,7 +32,39 @@ func (h *triggerHarness) Run(_ context.Context, request harness.Request) (harnes
 	h.mu.Lock()
 	h.runs++
 	h.mu.Unlock()
-	return harness.Result{Response: "done", Transcript: []byte("{}\n"), TargetRead: strings.Contains(request.Prompt, "relevant"), Duration: time.Millisecond}, nil
+	return harness.Result{Response: "done", Transcript: []byte("{}\n"), TargetRead: strings.Contains(request.Prompt, "relevant"), Duration: time.Millisecond, Attempts: h.attempts}, nil
+}
+
+func TestRunPersistsTriggerTransportRetryEvidence(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "demo")
+	if err := os.MkdirAll(filepath.Join(root, "evals"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: demo\ndescription: Demo\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	contents := `{"skill_name":"demo","cases":[{"id":"yes","prompt":"relevant","should_trigger":true},{"id":"no","prompt":"near miss","should_trigger":false}]}`
+	if err := os.WriteFile(filepath.Join(root, "evals", "triggers.json"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	suite, err := LoadSuite(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "stream disconnected before completion"}}}
+	report, err := Run(context.Background(), suite, &triggerHarness{attempts: attempts}, cache.Store{Root: t.TempDir()}, Config{Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), NoCache: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	timing, err := os.ReadFile(filepath.Join(report.Workspace, "case-yes", "trial-1", "timing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(timing), `"attempt_count": 2`) || !strings.Contains(string(timing), "stream disconnected before completion") {
+		t.Fatalf("trigger timing lacks retry evidence: %s", timing)
+	}
 }
 
 func TestRunChecksPositiveAndNegativeCases(t *testing.T) {
