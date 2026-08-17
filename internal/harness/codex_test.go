@@ -810,6 +810,172 @@ printf '%%s\n' "$count" > "$count_file"
 	}
 }
 
+func TestCodexFirstTokenWatchdogControls(t *testing.T) {
+	t.Setenv("SHUHARI_FIRST_TOKEN_TIMEOUT", "250ms")
+
+	tests := []struct {
+		name             string
+		body             string
+		wantResponse     string
+		wantError        bool
+		wantTransient    bool
+		wantAttemptCount int
+		wantInvocations  string
+		wantWatchdog     bool
+		wantElapsed      time.Duration
+	}{
+		{
+			name: "silent attempt retries then succeeds",
+			body: `if test "$count" = 1; then
+  printf '%s\n' '{"type":"thread.started","thread_id":"silent"}'
+  exec sleep 2
+fi
+printf '%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"recovered"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+			wantResponse:     "recovered",
+			wantAttemptCount: 2,
+			wantInvocations:  "2",
+			wantWatchdog:     true,
+		},
+		{
+			name: "silent attempts exhaust retry bound",
+			body: `printf '%s\n' '{"type":"thread.started","thread_id":"silent"}'
+exec sleep 2`,
+			wantError:        true,
+			wantTransient:    true,
+			wantAttemptCount: 3,
+			wantInvocations:  "3",
+			wantWatchdog:     true,
+		},
+		{
+			name: "first model item disables watchdog",
+			body: `sleep 0.02
+printf '%s\n' '{"type":"item.started","item":{"id":"answer","type":"agent_message","text":""}}'
+sleep 0.35
+printf '%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"slow response"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+			wantResponse:     "slow response",
+			wantAttemptCount: 1,
+			wantInvocations:  "1",
+			wantElapsed:      300 * time.Millisecond,
+		},
+		{
+			name: "completed response is not retried",
+			body: `printf '%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"completed"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+printf '%s\n' 'connection reset by peer after completed response' >&2
+exit 2`,
+			wantError:        true,
+			wantAttemptCount: 0,
+			wantInvocations:  "1",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			capture := t.TempDir()
+			script := filepath.Join(t.TempDir(), "fake-codex")
+			contents := fmt.Sprintf(`#!/bin/sh
+count_file=%q/count
+count=0
+if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
+count=$((count + 1))
+printf '%%s\n' "$count" > "$count_file"
+%s
+`, capture, test.body)
+			if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			agent := newCodex(Config{Executable: script})
+			agent.waitBeforeRetry = noRetryWait
+			security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+			started := time.Now()
+			result, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Security: security, Timeout: 500 * time.Millisecond})
+			elapsed := time.Since(started)
+			if test.wantError && err == nil {
+				t.Fatal("Run() succeeded, want error")
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if errors.Is(err, ErrTransient) != test.wantTransient {
+				t.Fatalf("Run() transient = %v, want %v; error=%v", errors.Is(err, ErrTransient), test.wantTransient, err)
+			}
+			attempts := result.Attempts
+			if err != nil {
+				attempts = AttemptsFromError(err)
+			}
+			if attempts.AttemptCount != test.wantAttemptCount {
+				t.Fatalf("attempt count = %d, want %d; evidence=%#v", attempts.AttemptCount, test.wantAttemptCount, attempts)
+			}
+			if test.wantWatchdog {
+				wantErrors := test.wantAttemptCount
+				if !test.wantError {
+					wantErrors--
+				}
+				if len(attempts.AttemptErrors) != wantErrors {
+					t.Fatalf("attempt errors = %d, want %d", len(attempts.AttemptErrors), wantErrors)
+				}
+				for index, attemptErr := range attempts.AttemptErrors {
+					if !strings.Contains(attemptErr.Error, "no model output within 250ms") {
+						t.Fatalf("attempt error is not a first-token watchdog failure: %#v", attemptErr)
+					}
+					if attemptErr.DurationMS < 150 || attemptErr.DurationMS > 1000 {
+						t.Fatalf("attempt duration = %dms, want approximately 250ms", attemptErr.DurationMS)
+					}
+					if attemptErr.StdoutBytes == 0 || attemptErr.Timestamp.IsZero() {
+						t.Fatalf("watchdog attempt lacks receipt evidence: %#v", attemptErr)
+					}
+					if index > 0 && !attemptErr.Timestamp.After(attempts.AttemptErrors[index-1].Timestamp) {
+						t.Fatalf("attempt timestamps are not ordered: %#v", attempts.AttemptErrors)
+					}
+				}
+			}
+			if test.wantElapsed > 0 && elapsed < test.wantElapsed {
+				t.Fatalf("Run() elapsed %s, want at least %s after first model item", elapsed, test.wantElapsed)
+			}
+			if result.Response != test.wantResponse {
+				t.Fatalf("response = %q, want %q", result.Response, test.wantResponse)
+			}
+			count, readErr := os.ReadFile(filepath.Join(capture, "count"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if got := strings.TrimSpace(string(count)); got != test.wantInvocations {
+				t.Fatalf("Codex invocations = %q, want %q", got, test.wantInvocations)
+			}
+		})
+	}
+}
+
+func TestCodexFirstTokenTimeoutConfiguration(t *testing.T) {
+	t.Setenv("SHUHARI_FIRST_TOKEN_TIMEOUT", "")
+	if timeout, err := configuredFirstTokenTimeout(); err != nil || timeout != 90*time.Second {
+		t.Fatalf("configuredFirstTokenTimeout() = %s, %v; want 90s", timeout, err)
+	}
+
+	for _, value := range []string{"invalid", "0s", "-1s"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("SHUHARI_FIRST_TOKEN_TIMEOUT", value)
+			capture := t.TempDir()
+			script := filepath.Join(t.TempDir(), "fake-codex")
+			contents := fmt.Sprintf("#!/bin/sh\nprintf 'called\\n' > %q/called\nprintf '%%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"done\"}}'\nprintf '%%s\\n' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n", capture)
+			if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			agent := newCodex(Config{Executable: script})
+			security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+			_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Security: security, Timeout: time.Second})
+			if err == nil || !strings.Contains(err.Error(), "SHUHARI_FIRST_TOKEN_TIMEOUT") {
+				t.Fatalf("Run() error = %v, want actionable watchdog configuration error", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(capture, "called")); !os.IsNotExist(statErr) {
+				t.Fatalf("Codex started before watchdog configuration refusal: %v", statErr)
+			}
+		})
+	}
+}
+
 func noRetryWait(context.Context, int) error { return nil }
 
 func TestCodexDoesNotRetryInputTooLarge(t *testing.T) {
