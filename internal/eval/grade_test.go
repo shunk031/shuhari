@@ -329,6 +329,58 @@ func TestBuildGradingRejectsBlankOrUnsupportedEvidence(t *testing.T) {
 	}
 }
 
+func TestBuildGradingRequiresVerbatimEvidenceFromRetainedShape(t *testing.T) {
+	t.Parallel()
+
+	const artifact = "gh api repos/creative-graphic-design/design-generators --jq .permissions.push"
+	const assertion = "The response verifies push permission for the target repository before writing."
+	for _, test := range []struct {
+		name     string
+		evidence string
+		wantErr  bool
+	}{
+		{
+			name:     "renamed variable and substituted repository fail",
+			evidence: `Observed "gh api repos/$REPO_SLUG --jq .permissions.push".`,
+			wantErr:  true,
+		},
+		{
+			name:     "verbatim repository command passes",
+			evidence: `Observed "gh api repos/creative-graphic-design/design-generators --jq .permissions.push".`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			grading, err := buildGrading(
+				[]string{assertion},
+				[]AssertionResult{{Text: assertion, Passed: true, Evidence: test.evidence}},
+				artifact,
+			)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("buildGrading() accepted renamed-variable evidence")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildGrading() rejected verbatim evidence: %v", err)
+			}
+			if got := grading.AssertionResults[0].EvidenceGrounding; got != evidenceGroundingStrong {
+				t.Fatalf("evidence grounding = %q, want %q", got, evidenceGroundingStrong)
+			}
+		})
+	}
+}
+
+func TestGraderPromptRequiresExactPositiveEvidence(t *testing.T) {
+	t.Parallel()
+
+	for _, want := range []string{"copy the relevant observation verbatim", "copy exact text", "do not paraphrase", "rename variables", "literal paths"} {
+		if !strings.Contains(strings.ToLower(graderPrompt), strings.ToLower(want)) {
+			t.Fatalf("grader prompt lacks %q: %s", want, graderPrompt)
+		}
+	}
+}
+
 func TestGradeRunsPassesRawResponsesAlongsideFramedArtifacts(t *testing.T) {
 	t.Parallel()
 
@@ -399,11 +451,15 @@ func TestExclusivityUsesRawResponseNotArtifactFraming(t *testing.T) {
 	}
 }
 
-func TestBuildGradingAcceptsGroundedParaphrase(t *testing.T) {
+func TestBuildGradingRejectsGroundedParaphrase(t *testing.T) {
 	t.Parallel()
 
 	artifact := "Do not paste a personal access token into a file, shell profile, dotfile, or persistent environment variable."
-	grading, err := buildGrading(
+	grounding := groundEvidence(`Observed "Do not put a PAT in a dotfile or persistent environment variable."`, artifact)
+	if grounding.Kind != evidenceGroundingParaphrase || grounding.Score != 0.75 {
+		t.Fatalf("grounding = %q score %v, want paraphrase/0.75", grounding.Kind, grounding.Score)
+	}
+	_, err := buildGrading(
 		[]string{"credentials are not persisted"},
 		[]AssertionResult{{
 			Text:     "credentials are not persisted",
@@ -412,23 +468,8 @@ func TestBuildGradingAcceptsGroundedParaphrase(t *testing.T) {
 		}},
 		artifact,
 	)
-	if err != nil {
-		t.Fatalf("buildGrading() rejected grounded paraphrase: %v", err)
-	}
-	result := grading.AssertionResults[0]
-	if result.EvidenceGrounding != evidenceGroundingParaphrase {
-		t.Fatalf("evidence grounding = %q, want %q", result.EvidenceGrounding, evidenceGroundingParaphrase)
-	}
-	if result.EvidenceGroundingScore != 0.75 {
-		t.Fatalf("evidence grounding score = %v, want 0.75", result.EvidenceGroundingScore)
-	}
-	wantSpan := strings.TrimSuffix(artifact, ".")
-	if result.EvidenceGroundingSpan != wantSpan {
-		t.Fatalf("evidence grounding span = %q, want %q", result.EvidenceGroundingSpan, wantSpan)
-	}
-	wantObservation := "Do not put a PAT in a dotfile or persistent environment variable."
-	if result.EvidenceGroundingObservation != wantObservation {
-		t.Fatalf("evidence grounding observation = %q, want %q", result.EvidenceGroundingObservation, wantObservation)
+	if err == nil {
+		t.Fatal("buildGrading() accepted a paraphrased positive observation")
 	}
 }
 
@@ -1089,12 +1130,49 @@ func TestJudgeValidationRetryPromptContainsOnlyContractError(t *testing.T) {
 		t.Fatalf("gradeRuns() error = %v", err)
 	}
 	retryPrompt := agent.requests[1].Prompt
-	if !strings.Contains(strings.ToLower(retryPrompt), "validation error") || !strings.Contains(retryPrompt, "lacks grounded evidence") {
+	if !strings.Contains(strings.ToLower(retryPrompt), "validation feedback") || !strings.Contains(retryPrompt, "lacks grounded evidence") {
 		t.Fatalf("retry prompt lacks contract error: %s", retryPrompt)
 	}
 	for _, forbidden := range []string{"fabricated-answer-marker", `"passed":true`, `"preferred":"A"`} {
 		if strings.Contains(retryPrompt, forbidden) {
 			t.Fatalf("retry prompt contains assertion answer %q", forbidden)
+		}
+	}
+}
+
+func TestJudgeValidationRetryPromptContainsVerbatimFeedback(t *testing.T) {
+	t.Parallel()
+
+	const (
+		assertion = "The response verifies push permission for the target repository before writing."
+		artifact  = "gh api repos/creative-graphic-design/design-generators --jq .permissions.push"
+	)
+	first := judgeOutput{Cases: []judgeEntry{{
+		ID: "case-a", Trial: 1,
+		AAssertionResults: []AssertionResult{{Text: assertion, Passed: true, Evidence: `Observed "gh api repos/$REPO_SLUG --jq .permissions.push".`}},
+		BAssertionResults: []AssertionResult{{Text: assertion, Passed: true, Evidence: `Observed "gh api repos/$REPO_SLUG --jq .permissions.push".`}},
+	}}}
+	second := judgeOutput{Cases: []judgeEntry{{
+		ID: "case-a", Trial: 1,
+		AAssertionResults: []AssertionResult{{Text: assertion, Passed: true, Evidence: `Observed "gh api repos/creative-graphic-design/design-generators --jq .permissions.push".`}},
+		BAssertionResults: []AssertionResult{{Text: assertion, Passed: true, Evidence: `Observed "gh api repos/creative-graphic-design/design-generators --jq .permissions.push".`}},
+	}}}
+	firstJSON, _ := json.Marshal(first)
+	secondJSON, _ := json.Marshal(second)
+	agent := &provenanceRetryHarness{responses: []string{string(firstJSON), string(secondJSON)}}
+	input := trialJudgeInputs{ID: "case-a", Trial: 1, Grader: judgeInput{
+		ID: "case-a", Trial: 1, Assertions: []string{assertion}, A: artifact, B: artifact,
+	}}
+	if _, _, _, err := runGradersPerTrial(context.Background(), agent, []trialJudgeInputs{input}, Config{Timeout: time.Second}, testJudgeSecurity()); err != nil {
+		t.Fatalf("runGradersPerTrial() rejected verbatim retry: %v", err)
+	}
+	if len(agent.requests) != 2 {
+		t.Fatalf("judge calls = %d, want initial plus validation retry", len(agent.requests))
+	}
+	retryPrompt := agent.requests[1].Prompt
+	for _, want := range []string{"quote-not-found", "copy the relevant evidence", "verbatim", "do not paraphrase"} {
+		if !strings.Contains(strings.ToLower(retryPrompt), strings.ToLower(want)) {
+			t.Fatalf("retry prompt lacks %q: %s", want, retryPrompt)
 		}
 	}
 }

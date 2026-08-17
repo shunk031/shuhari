@@ -292,13 +292,13 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 				return fmt.Errorf("validate B evidence: %w", err)
 			}
 			return nil
-		}, func(_ error) (judgeRetryRequest, bool) {
+		}, func(validationErr error) (judgeRetryRequest, bool) {
 			if focused == nil {
 				return judgeRetryRequest{}, false
 			}
 			focusedRetry = true
 			return judgeRetryRequest{
-				Instructions: strings.TrimSpace(graderPrompt) + "\n\nThe previous response omitted required assertion results. Return results only for the assertions listed in A_assertions and B_assertions; leave the other side's result array empty. Do not repeat any already validated assertion.\n",
+				Instructions: strings.TrimSpace(graderPrompt) + "\n\nThe previous response failed validation. Return results only for the assertions listed in A_assertions and B_assertions; leave the other side's result array empty. Do not repeat any already validated assertion.\nValidation feedback: " + validationErr.Error() + "\nFor every passing present or positive claim, copy the relevant evidence verbatim from the artifact. Do not paraphrase, rename variables, or substitute literal paths or values.\n",
 				Input:        []focusedGraderInput{*focused},
 			}, true
 		})
@@ -465,10 +465,10 @@ func runValidatedStructuredJudgeWithRetry(ctx context.Context, agent harness.Har
 					attemptInstructions = retry.Instructions
 					attemptInput = retry.Input
 				} else {
-					attemptInstructions = strings.TrimSpace(instructions) + "\n\nThe previous response failed validation. Return a corrected response for the original input.\nValidation error: " + validationErr.Error()
+					attemptInstructions = validationRetryInstructions(instructions, validationErr)
 				}
 			} else {
-				attemptInstructions = strings.TrimSpace(instructions) + "\n\nThe previous response failed validation. Return a corrected response for the original input.\nValidation error: " + validationErr.Error()
+				attemptInstructions = validationRetryInstructions(instructions, validationErr)
 			}
 		}
 		var err error
@@ -490,6 +490,10 @@ func runValidatedStructuredJudgeWithRetry(ctx context.Context, agent harness.Har
 		}
 	}
 	return response, callAttempts, &judgeRetryError{cause: validationErr, responses: responses}
+}
+
+func validationRetryInstructions(instructions string, validationErr error) string {
+	return strings.TrimSpace(instructions) + "\n\nThe previous response failed validation. Return a corrected response for the original input.\nValidation feedback: " + validationErr.Error() + "\nFor every passing present or positive claim, copy the relevant evidence verbatim from the artifact. Do not paraphrase, rename variables, or substitute literal paths or values.\n"
 }
 
 func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, security harness.SecurityResolution) (string, harness.AttemptEvidence, error) {
@@ -616,6 +620,9 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 				if !supportsAbsenceClaim(assertion, result.Absence.Query) {
 					return Grading{}, fmt.Errorf("%w: absence claim does not match a negated assertion %q", errInvalidGrading, assertion)
 				}
+				if requiresVerbatimPositiveEvidence(assertion, result.Absence.Query) && grounding.Kind != evidenceGroundingStrong {
+					return Grading{}, invalidPositiveEvidenceError(assertion, grounding)
+				}
 				grounding = groundAbsence(result.Absence, artifact)
 				if grounding.Kind == evidenceGroundingContradiction {
 					// The artifact is authoritative for negative claims. A matching
@@ -623,8 +630,8 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 					result.Passed = false
 				}
 			}
-			if result.Passed && grounding.Kind == evidenceGroundingHallucination {
-				return Grading{}, fmt.Errorf("%w: passing assertion %q lacks grounded evidence in the artifact", errInvalidGrading, assertion)
+			if result.Passed && result.Absence == nil && grounding.Kind != evidenceGroundingStrong {
+				return Grading{}, invalidPositiveEvidenceError(assertion, grounding)
 			}
 			result.EvidenceGrounding = grounding.Kind
 			result.EvidenceGroundingScore = grounding.Score
@@ -650,6 +657,27 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 		summary.PassRate = float64(summary.Passed) / float64(summary.Total)
 	}
 	return Grading{AssertionResults: ordered, Summary: summary}, nil
+}
+
+func requiresVerbatimPositiveEvidence(assertion, absenceQuery string) bool {
+	normalizedQuery := strings.ToLower(normalizeEvidenceText(absenceQuery))
+	for _, clause := range absenceClauseBoundaryPattern.Split(strings.ToLower(normalizeEvidenceText(assertion)), -1) {
+		if absenceAssertionCuePattern.MatchString(clause) {
+			if strings.Contains(clause, normalizedQuery) || absenceQueryMatchesNegatedAction(clause, normalizedQuery) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func invalidPositiveEvidenceError(assertion string, grounding evidenceGrounding) error {
+	feedback := "no verbatim quoted observation was found"
+	if grounding.Observation != "" {
+		feedback = fmt.Sprintf("quoted observation %q was not copied verbatim", grounding.Observation)
+	}
+	return fmt.Errorf("%w: passing assertion %q lacks grounded evidence in the artifact (quote-not-found: %s)", errInvalidGrading, assertion, feedback)
 }
 
 func blindLabels(id string, trial int, with, without string) blindMapping {
