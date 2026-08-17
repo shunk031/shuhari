@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ type recordingJudgeHarness struct {
 	invalidComparators int
 	rejectOverBytes    int
 	preferredVariants  map[string]string
+	transportAttempts  harness.AttemptEvidence
 }
 
 func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
@@ -44,7 +46,7 @@ func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) 
 		}
 		h.mu.Unlock()
 		if invalid {
-			return harness.Result{Response: `{"cases":[]}`}, nil
+			return harness.Result{Response: `{"cases":[]}`, Attempts: h.transportAttempts}, nil
 		}
 		output := comparatorOutput{}
 		for _, input := range inputs {
@@ -59,7 +61,7 @@ func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) 
 			output.Cases = append(output.Cases, comparatorEntry{ID: input.ID, Trial: input.Trial, Preferred: preferred, Reason: "comparison"})
 		}
 		encoded, _ := json.Marshal(output)
-		return harness.Result{Response: string(encoded)}, nil
+		return harness.Result{Response: string(encoded), Attempts: h.transportAttempts}, nil
 	}
 	var inputs []judgeInput
 	if err := json.Unmarshal([]byte(payload), &inputs); err != nil {
@@ -92,7 +94,58 @@ func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) 
 		output.Cases = append(output.Cases, judgeEntry{ID: input.ID, Trial: input.Trial, AAssertionResults: results(input.A), BAssertionResults: results(input.B)})
 	}
 	encoded, _ := json.Marshal(output)
-	return harness.Result{Response: string(encoded)}, nil
+	return harness.Result{Response: string(encoded), Attempts: h.transportAttempts}, nil
+}
+
+func TestGradeRunsPersistsJudgeTransportRetryEvidence(t *testing.T) {
+	t.Parallel()
+
+	suite, results := oneTrialJudgeSuite(t)
+	iteration := t.TempDir()
+	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "response body decode error"}}}
+	_, _, _, _, _, err := gradeRuns(context.Background(), &recordingJudgeHarness{transportAttempts: attempts}, suite, results, Config{Trials: 1, Timeout: time.Second}, iteration)
+	if err != nil {
+		t.Fatalf("gradeRuns() error = %v", err)
+	}
+	contents, err := os.ReadFile(filepath.Join(iteration, "judge-retries.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"stage": "grader"`, `"stage": "comparator"`, `"attempt_count": 2`, "response body decode error"} {
+		if !strings.Contains(string(contents), want) {
+			t.Fatalf("judge retry artifact lacks %q: %s", want, contents)
+		}
+	}
+}
+
+type exhaustedJudgeTransportHarness struct{ recordingJudgeHarness }
+
+func (h *exhaustedJudgeTransportHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
+	if len(request.OutputSchema) == 0 {
+		return h.recordingJudgeHarness.Run(context.Background(), request)
+	}
+	attempts := harness.AttemptEvidence{AttemptCount: 3, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "disconnect one"}, {Attempt: 2, Error: "disconnect two"}, {Attempt: 3, Error: "disconnect three"}}}
+	return harness.Result{}, &harness.RetryError{Cause: fmt.Errorf("%w: disconnect three", harness.ErrTransient), Attempts: attempts}
+}
+
+func TestGradeRunsPersistsExhaustedJudgeTransportAttempts(t *testing.T) {
+	t.Parallel()
+
+	suite, results := oneTrialJudgeSuite(t)
+	iteration := t.TempDir()
+	_, _, _, _, _, err := gradeRuns(context.Background(), &exhaustedJudgeTransportHarness{}, suite, results, Config{Trials: 1, Timeout: time.Second}, iteration)
+	if err == nil || !errors.Is(err, harness.ErrTransient) {
+		t.Fatalf("gradeRuns() error = %v, want exhausted transport error", err)
+	}
+	contents, readErr := os.ReadFile(filepath.Join(iteration, "judge-retries.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, want := range []string{`"stage": "grader"`, `"attempt_count": 3`, "disconnect one", "disconnect three"} {
+		if !strings.Contains(string(contents), want) {
+			t.Fatalf("judge retry artifact lacks %q: %s", want, contents)
+		}
+	}
 }
 
 func TestGradeRunsAllowsMinorityBaselinePreference(t *testing.T) {

@@ -64,9 +64,37 @@ type Result struct {
 	Transcript          []byte
 	Usage               Usage
 	Duration            time.Duration
+	Attempts            AttemptEvidence
 	TargetRead          bool
 	Actions             []Action
 	OrderUnknownActions []Action
+}
+
+type AttemptError struct {
+	Attempt int    `json:"attempt"`
+	Error   string `json:"error"`
+}
+
+type AttemptEvidence struct {
+	AttemptCount  int            `json:"attempt_count"`
+	AttemptErrors []AttemptError `json:"attempt_errors,omitempty"`
+}
+
+type RetryError struct {
+	Cause    error
+	Attempts AttemptEvidence
+}
+
+func (e *RetryError) Error() string { return e.Cause.Error() }
+
+func (e *RetryError) Unwrap() error { return e.Cause }
+
+func AttemptsFromError(err error) AttemptEvidence {
+	var retryError *RetryError
+	if errors.As(err, &retryError) {
+		return retryError.Attempts
+	}
+	return AttemptEvidence{}
 }
 
 type ExecutionSecurity struct {

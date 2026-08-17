@@ -20,11 +20,14 @@ import (
 	"time"
 )
 
-var transientPattern = regexp.MustCompile(`(?i)(?:429|too many requests|timed? ?out|timeout|connection|network|tls|temporar|unavailable|rate.?limit|reset by peer|empty response)`)
+var transientPattern = regexp.MustCompile(`(?i)(?:429|too many requests|timed? ?out|timeout|connection|network|tls|temporar|unavailable|rate.?limit|reset by peer|empty response|stream disconnected before completion|error decoding response body)`)
 var inputTooLargePattern = regexp.MustCompile(`(?i)(?:input_too_large|input exceeds the maximum length)`)
 
+const maxCodexAttempts = 3
+
 type codexHarness struct {
-	executable string
+	executable      string
+	waitBeforeRetry func(context.Context, int) error
 }
 
 func newCodex(config Config) *codexHarness {
@@ -32,7 +35,19 @@ func newCodex(config Config) *codexHarness {
 	if executable == "" {
 		executable = "codex"
 	}
-	return &codexHarness{executable: executable}
+	return &codexHarness{executable: executable, waitBeforeRetry: waitForCodexRetry}
+}
+
+func waitForCodexRetry(ctx context.Context, retry int) error {
+	delay := 250 * time.Millisecond * time.Duration(1<<(retry-1))
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (h *codexHarness) Probe(ctx context.Context) (Identity, error) {
@@ -136,25 +151,36 @@ func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error)
 	if err := copyTree(request.WorkDir, snapshot); err != nil {
 		return Result{}, fmt.Errorf("snapshot work directory: %w", err)
 	}
-	var last error
-	for attempt := 0; attempt < 2; attempt++ {
+	evidence := AttemptEvidence{}
+	for attempt := 1; attempt <= maxCodexAttempts; attempt++ {
 		if err := restoreDirectory(snapshot, request.WorkDir); err != nil {
 			return Result{}, err
 		}
 		result, err := h.runOnce(ctx, request)
-		if err == nil {
-			if strings.TrimSpace(result.Response) == "" {
-				last = fmt.Errorf("%w: codex returned an empty response", ErrTransient)
-				continue
-			}
+		if err == nil && strings.TrimSpace(result.Response) != "" {
+			evidence.AttemptCount = attempt
+			result.Attempts = evidence
 			return result, nil
 		}
-		last = err
+		if err == nil {
+			err = fmt.Errorf("%w: codex returned an empty response", ErrTransient)
+		}
+		evidence.AttemptCount = attempt
+		evidence.AttemptErrors = append(evidence.AttemptErrors, AttemptError{Attempt: attempt, Error: err.Error()})
 		if !errors.Is(err, ErrTransient) {
+			if attempt > 1 {
+				return Result{}, &RetryError{Cause: err, Attempts: evidence}
+			}
 			return Result{}, err
 		}
+		if attempt == maxCodexAttempts {
+			return Result{}, &RetryError{Cause: err, Attempts: evidence}
+		}
+		if err := h.waitBeforeRetry(ctx, attempt); err != nil {
+			return Result{}, &RetryError{Cause: err, Attempts: evidence}
+		}
 	}
-	return Result{}, last
+	panic("unreachable")
 }
 
 func (h *codexHarness) runOnce(parent context.Context, request Request) (Result, error) {
@@ -220,7 +246,11 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 	command.Stderr = &stderr
 	err = command.Run()
 	duration := time.Since(started)
+	completed := codexTraceCompleted(stdout.Bytes())
 	if ctx.Err() == context.DeadlineExceeded {
+		if completed {
+			return Result{}, fmt.Errorf("codex timed out after a completed response")
+		}
 		return Result{}, fmt.Errorf("%w: codex timed out after %s", ErrTransient, request.Timeout)
 	}
 	if err != nil {
@@ -231,7 +261,7 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 		if inputTooLargePattern.MatchString(message) {
 			return Result{}, fmt.Errorf("codex failed: %w: %s", err, message)
 		}
-		if transientPattern.MatchString(message) {
+		if !completed && transientPattern.MatchString(message) {
 			return Result{}, fmt.Errorf("%w: %s", ErrTransient, message)
 		}
 		return Result{}, fmt.Errorf("codex failed: %w: %s", err, message)
@@ -250,6 +280,33 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 		result.OrderUnknownActions = append(result.OrderUnknownActions, ActionFileChange)
 	}
 	return result, nil
+}
+
+func codexTraceCompleted(trace []byte) bool {
+	scanner := bufio.NewScanner(bytes.NewReader(trace))
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		var event struct {
+			Type string          `json:"type"`
+			Item json.RawMessage `json:"item"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &event) != nil {
+			continue
+		}
+		if event.Type == "turn.completed" {
+			return true
+		}
+		if event.Type == "item.completed" {
+			var item struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(event.Item, &item) == nil && item.Type == "agent_message" && strings.TrimSpace(item.Text) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func targetOrEmpty(target *Target) Target {
@@ -306,6 +363,9 @@ func parseCodexTrace(trace []byte, target Target) (Result, error) {
 			}
 			if message == "" {
 				message = "Codex turn failed without an error message"
+			}
+			if !turnCompleted && lastMessageEvent < 0 && transientPattern.MatchString(message) {
+				return Result{}, fmt.Errorf("%w: %s", ErrTransient, message)
 			}
 			return Result{}, errors.New(message)
 		case "item.started", "item.updated", "item.completed":
