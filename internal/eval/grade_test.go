@@ -25,6 +25,74 @@ type recordingJudgeHarness struct {
 	transportAttempts  harness.AttemptEvidence
 }
 
+type provenanceRetryHarness struct {
+	recordingJudgeHarness
+	responses []string
+	next      int
+}
+
+func (h *provenanceRetryHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
+	h.mu.Lock()
+	h.requests = append(h.requests, request)
+	response := h.responses[h.next]
+	h.next++
+	h.mu.Unlock()
+	return harness.Result{Response: response}, nil
+}
+
+func TestGraderRetryPreservesPreviouslyGroundedProvenance(t *testing.T) {
+	t.Parallel()
+
+	contents, err := os.ReadFile(filepath.Join("testdata", "grader-provenance-retry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Assertions    []string    `json:"assertions"`
+		A             string      `json:"A"`
+		B             string      `json:"B"`
+		FirstResponse judgeOutput `json:"first_response"`
+		RetryResponse judgeOutput `json:"retry_response"`
+	}
+	if err := json.Unmarshal(contents, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := json.Marshal(fixture.FirstResponse)
+	retry, _ := json.Marshal(fixture.RetryResponse)
+	firstA := fixture.FirstResponse.Cases[0].AAssertionResults
+	retryA := fixture.RetryResponse.Cases[0].AAssertionResults
+	if grounding := groundEvidence(firstA[0].Evidence, fixture.A); grounding.Kind != evidenceGroundingStrong {
+		t.Fatalf("first response function evidence = %q score %.4f, want strong", grounding.Kind, grounding.Score)
+	}
+	if _, err := buildGrading(fixture.Assertions[1:], firstA[1:], fixture.A); err == nil {
+		t.Fatal("first response unmatched trailing quote unexpectedly passed")
+	}
+	if _, err := buildGrading(fixture.Assertions[:1], retryA[:1], fixture.A); err == nil {
+		t.Fatal("hallucinated retry provenance passed when evaluated without a valid prior result")
+	}
+	if _, err := buildGrading(fixture.Assertions[1:], retryA[1:], fixture.A); err != nil {
+		t.Fatalf("retry correction for the unresolved assertion was rejected: %v", err)
+	}
+	agent := &provenanceRetryHarness{responses: []string{string(first), string(retry)}}
+	input := trialJudgeInputs{
+		ID:     "case-a",
+		Trial:  2,
+		Grader: judgeInput{ID: "case-a", Trial: 2, Assertions: fixture.Assertions, A: fixture.A, B: fixture.B},
+	}
+
+	entries, _, _, err := runGradersPerTrial(context.Background(), agent, []trialJudgeInputs{input}, Config{Timeout: time.Second}, testJudgeSecurity())
+	if err != nil {
+		t.Fatalf("runGradersPerTrial() rejected the provenance-preserving retry: %v", err)
+	}
+	entry := entries[caseTrialKey("case-a", 2)]
+	if got, want := entry.AAssertionResults[0].Evidence, fixture.FirstResponse.Cases[0].AAssertionResults[0].Evidence; got != want {
+		t.Fatalf("grounded first-attempt evidence was replaced:\n got %q\nwant %q", got, want)
+	}
+	if got, want := entry.AAssertionResults[1].Evidence, fixture.RetryResponse.Cases[0].AAssertionResults[1].Evidence; got != want {
+		t.Fatalf("invalid first-attempt evidence was not corrected:\n got %q\nwant %q", got, want)
+	}
+}
+
 func fakeJudgeAttemptError(attempt int, message string) harness.AttemptError {
 	return harness.AttemptError{
 		Attempt:     attempt,

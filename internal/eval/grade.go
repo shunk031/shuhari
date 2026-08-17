@@ -218,16 +218,29 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 		graderInputs := []judgeInput{item.Grader}
 		var output judgeOutput
 		var trialEntries map[string]judgeEntry
+		var previousEntries map[string]judgeEntry
 		response, attempts, err := runValidatedStructuredJudge(ctx, agent, graderPrompt, graderInputs, graderSchema(), config, security, func(response string) error {
 			output = judgeOutput{}
 			if err := json.Unmarshal([]byte(response), &output); err != nil {
 				return fmt.Errorf("decode response: %w", err)
+			}
+			if previousEntries != nil {
+				for index := range output.Cases {
+					entry := &output.Cases[index]
+					previous, ok := previousEntries[caseTrialKey(entry.ID, entry.Trial)]
+					if !ok {
+						continue
+					}
+					entry.AAssertionResults = preserveValidatedAssertionResults(item.Grader.Assertions, previous.AAssertionResults, entry.AAssertionResults, item.Grader.A)
+					entry.BAssertionResults = preserveValidatedAssertionResults(item.Grader.Assertions, previous.BAssertionResults, entry.BAssertionResults, item.Grader.B)
+				}
 			}
 			var err error
 			trialEntries, err = validateGraderEntries(output, graderInputs)
 			if err != nil {
 				return err
 			}
+			previousEntries = trialEntries
 			entry := trialEntries[caseTrialKey(item.ID, item.Trial)]
 			if _, err := buildGrading(item.Grader.Assertions, entry.AAssertionResults, item.Grader.A); err != nil {
 				return fmt.Errorf("validate A evidence: %w", err)
@@ -251,6 +264,38 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 		return nil, "", retries, fmt.Errorf("encode grader response: %w", err)
 	}
 	return entries, string(encoded), retries, nil
+}
+
+func preserveValidatedAssertionResults(expected []string, previous, current []AssertionResult, artifact string) []AssertionResult {
+	if len(previous) != len(expected) || len(current) != len(expected) {
+		return current
+	}
+	previousByText := make(map[string]AssertionResult, len(previous))
+	for _, result := range previous {
+		if _, duplicate := previousByText[result.Text]; duplicate {
+			return current
+		}
+		previousByText[result.Text] = result
+	}
+	currentByText := make(map[string]int, len(current))
+	for index, result := range current {
+		if _, duplicate := currentByText[result.Text]; duplicate {
+			return current
+		}
+		currentByText[result.Text] = index
+	}
+	merged := append([]AssertionResult(nil), current...)
+	for _, assertion := range expected {
+		previousResult, previousOK := previousByText[assertion]
+		currentIndex, currentOK := currentByText[assertion]
+		if !previousOK || !currentOK {
+			return current
+		}
+		if _, err := buildGrading([]string{assertion}, []AssertionResult{previousResult}, artifact); err == nil {
+			merged[currentIndex] = previousResult
+		}
+	}
+	return merged
 }
 
 func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config, security harness.SecurityResolution) (map[string]comparatorEntry, string, []judgeTransportRetry, error) {
