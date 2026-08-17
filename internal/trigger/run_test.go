@@ -22,6 +22,17 @@ type triggerHarness struct {
 	resolvePolicies []harness.SecurityPolicy
 }
 
+func fakeTriggerAttemptError(attempt int, message string) harness.AttemptError {
+	return harness.AttemptError{
+		Attempt:     attempt,
+		Error:       message,
+		Timestamp:   time.Date(2026, 8, 17, 12, 0, attempt, 0, time.UTC),
+		DurationMS:  int64(attempt),
+		StdoutBytes: int64(attempt),
+		StderrBytes: int64(attempt),
+	}
+}
+
 func (*triggerHarness) Probe(context.Context, ...harness.SecurityResolution) (harness.Identity, error) {
 	return harness.Identity{Agent: "fake", Version: "1"}, nil
 }
@@ -84,7 +95,7 @@ func TestRunPersistsTriggerTransportRetryEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "stream disconnected before completion"}}}
+	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{fakeTriggerAttemptError(1, "stream disconnected before completion")}}
 	report, err := Run(context.Background(), suite, &triggerHarness{attempts: attempts}, cache.Store{Root: t.TempDir()}, Config{Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), NoCache: true})
 	if err != nil {
 		t.Fatal(err)

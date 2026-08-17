@@ -25,6 +25,17 @@ type recordingJudgeHarness struct {
 	transportAttempts  harness.AttemptEvidence
 }
 
+func fakeJudgeAttemptError(attempt int, message string) harness.AttemptError {
+	return harness.AttemptError{
+		Attempt:     attempt,
+		Error:       message,
+		Timestamp:   time.Date(2026, 8, 17, 12, 0, attempt, 0, time.UTC),
+		DurationMS:  int64(attempt),
+		StdoutBytes: int64(attempt),
+		StderrBytes: int64(attempt),
+	}
+}
+
 func testJudgeSecurity() harness.SecurityResolution {
 	return fakeSecurityResolution(harness.SecurityPolicy{Level: harness.SandboxReadOnly})
 }
@@ -106,7 +117,7 @@ func TestGradeRunsPersistsJudgeTransportRetryEvidence(t *testing.T) {
 
 	suite, results := oneTrialJudgeSuite(t)
 	iteration := t.TempDir()
-	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "response body decode error"}}}
+	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{fakeJudgeAttemptError(1, "response body decode error")}}
 	_, _, _, _, _, err := gradeRuns(context.Background(), &recordingJudgeHarness{transportAttempts: attempts}, suite, results, Config{Trials: 1, Timeout: time.Second}, testJudgeSecurity(), iteration)
 	if err != nil {
 		t.Fatalf("gradeRuns() error = %v", err)
@@ -128,7 +139,7 @@ func (h *exhaustedJudgeTransportHarness) Run(_ context.Context, request harness.
 	if len(request.OutputSchema) == 0 {
 		return h.recordingJudgeHarness.Run(context.Background(), request)
 	}
-	attempts := harness.AttemptEvidence{AttemptCount: 3, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "disconnect one"}, {Attempt: 2, Error: "disconnect two"}, {Attempt: 3, Error: "disconnect three"}}}
+	attempts := harness.AttemptEvidence{AttemptCount: 3, AttemptErrors: []harness.AttemptError{fakeJudgeAttemptError(1, "disconnect one"), fakeJudgeAttemptError(2, "disconnect two"), fakeJudgeAttemptError(3, "disconnect three")}}
 	return harness.Result{}, &harness.RetryError{Cause: fmt.Errorf("%w: disconnect three", harness.ErrTransient), Attempts: attempts}
 }
 

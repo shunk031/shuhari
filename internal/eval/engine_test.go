@@ -35,6 +35,17 @@ type failingHarness struct{ fakeHarness }
 
 type unavailableHarness struct{ fakeHarness }
 
+func fakeAttemptError(attempt int, message string) harness.AttemptError {
+	return harness.AttemptError{
+		Attempt:     attempt,
+		Error:       message,
+		Timestamp:   time.Date(2026, 8, 17, 12, 0, attempt, 0, time.UTC),
+		DurationMS:  int64(attempt),
+		StdoutBytes: int64(attempt),
+		StderrBytes: int64(attempt),
+	}
+}
+
 func (*unavailableHarness) Probe(_ context.Context, securities ...harness.SecurityResolution) (harness.Identity, error) {
 	return harness.Identity{}, &harness.UnsupportedSecurityPolicyError{
 		Adapter: "fake",
@@ -113,7 +124,7 @@ func TestExecuteTaskPersistsTransportRetryEvidence(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
 	suite := Suite{Kind: harness.TargetSkill, Name: "demo", Root: root, TargetPath: root}
 	iteration := t.TempDir()
-	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "stream disconnected before completion"}}}
+	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{fakeAttemptError(1, "stream disconnected before completion")}}
 	security := fakeSecurityResolution(harness.SecurityPolicy{Level: harness.SandboxIsolated})
 	_, err := executeTask(context.Background(), suite, &fakeHarness{runAttempts: attempts}, Config{Timeout: time.Second}, security, iteration, runTask{Case: Case{ID: "one", Prompt: "task"}, Trial: 1, Variant: variantWithSkill})
 	if err != nil {
@@ -187,7 +198,7 @@ func (h *exhaustedRetryHarness) Run(_ context.Context, request harness.Request) 
 	if len(request.OutputSchema) > 0 {
 		return h.fakeHarness.Run(context.Background(), request)
 	}
-	attempts := harness.AttemptEvidence{AttemptCount: 3, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "disconnect one"}, {Attempt: 2, Error: "disconnect two"}, {Attempt: 3, Error: "disconnect three"}}}
+	attempts := harness.AttemptEvidence{AttemptCount: 3, AttemptErrors: []harness.AttemptError{fakeAttemptError(1, "disconnect one"), fakeAttemptError(2, "disconnect two"), fakeAttemptError(3, "disconnect three")}}
 	return harness.Result{}, &harness.RetryError{Cause: fmt.Errorf("%w: disconnect three", harness.ErrTransient), Attempts: attempts}
 }
 
@@ -206,7 +217,7 @@ func TestExecuteTaskPersistsExhaustedTransportAttempts(t *testing.T) {
 	if readErr != nil {
 		t.Fatalf("retry evidence missing: %v", readErr)
 	}
-	if !strings.Contains(string(contents), `"attempt_count": 3`) || !strings.Contains(string(contents), "disconnect one") || !strings.Contains(string(contents), "disconnect three") {
+	if !strings.Contains(string(contents), `"duration_ms": 6`) || !strings.Contains(string(contents), `"attempt_count": 3`) || !strings.Contains(string(contents), "disconnect one") || !strings.Contains(string(contents), "disconnect three") {
 		t.Fatalf("timing artifact lacks exhausted attempts: %s", contents)
 	}
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/shunk031/shuhari/internal/cache"
 	"github.com/shunk031/shuhari/internal/harness"
+	"github.com/shunk031/shuhari/internal/receipt"
 	"github.com/shunk031/shuhari/internal/skill"
 	contracts "github.com/shunk031/shuhari/schemas"
 )
@@ -288,7 +289,7 @@ func executeCase(ctx context.Context, suite Suite, agent harness.Harness, config
 	if err != nil {
 		runErr := fmt.Errorf("%s trial %d: %w", item.ID, trial, err)
 		if attempts := harness.AttemptsFromError(err); attempts.AttemptCount > 0 {
-			if writeErr := writeTriggerTiming(runDir, harness.Usage{}, 0, attempts); writeErr != nil {
+			if writeErr := receipt.WriteTiming(filepath.Join(runDir, "timing.json"), harness.Usage{}, 0, attempts); writeErr != nil {
 				return false, errors.Join(runErr, writeErr)
 			}
 		}
@@ -297,22 +298,10 @@ func executeCase(ctx context.Context, suite Suite, agent harness.Harness, config
 	if err := os.WriteFile(filepath.Join(runDir, "transcript.jsonl"), result.Transcript, 0o644); err != nil {
 		return false, fmt.Errorf("write trigger transcript: %w", err)
 	}
-	if err := writeTriggerTiming(runDir, result.Usage, result.Duration, result.Attempts); err != nil {
+	if err := receipt.WriteTiming(filepath.Join(runDir, "timing.json"), result.Usage, result.Duration, result.Attempts); err != nil {
 		return false, err
 	}
 	return result.TargetRead, nil
-}
-
-func writeTriggerTiming(runDir string, usage harness.Usage, duration time.Duration, attempts harness.AttemptEvidence) error {
-	if attempts.AttemptCount == 0 {
-		attempts.AttemptCount = 1
-	}
-	timing := struct {
-		TotalTokens int64 `json:"total_tokens"`
-		DurationMS  int64 `json:"duration_ms"`
-		harness.AttemptEvidence
-	}{TotalTokens: usage.TotalTokens(), DurationMS: duration.Milliseconds(), AttemptEvidence: attempts}
-	return writeJSON(filepath.Join(runDir, "timing.json"), timing)
 }
 
 func casePass(reads []bool, shouldTrigger, strict bool) bool {
