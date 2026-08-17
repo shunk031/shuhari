@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +78,36 @@ func TestDecodeApplicationJudgeOutputRejectsInvalidResponses(t *testing.T) {
 		if _, err := decodeApplicationJudgeOutput(response); err == nil {
 			t.Fatalf("decodeApplicationJudgeOutput(%q) succeeded", response)
 		}
+	}
+}
+
+func TestClassifyApplicationBoundsLargeTranscriptWithDigest(t *testing.T) {
+	t.Parallel()
+
+	suite := newApplicationSuite(t, []Case{{ID: "large", Prompt: "large", ShouldTrigger: true}})
+	agent := &applicationVerdictHarness{
+		judgeVerdicts: map[string]string{"return exactly": "applied"},
+		judgeEvidence: map[string]string{"return exactly": "The compact transcript shows the skill-specific action."},
+	}
+	transcript := []byte(fmt.Sprintf("{\"type\":\"item.completed\",\"item\":{\"type\":\"command_execution\",\"command\":\"cat .agents/skills/demo-skill/SKILL.md\",\"aggregated_output\":%q,\"exit_code\":0,\"status\":\"completed\"}}\n", strings.Repeat("oversized command output ", 100000)))
+	_, err := classifyApplication(context.Background(), suite, agent, Config{Timeout: time.Second}, fakeTriggerSecurityResolution(harness.SecurityPolicy{Level: harness.SandboxReadOnly}), t.TempDir(), suite.Cases[0], harness.Result{TargetRead: true, Transcript: transcript})
+	if err != nil {
+		t.Fatalf("classifyApplication() error = %v", err)
+	}
+	if len(agent.judgePrompts) != 1 {
+		t.Fatalf("judge prompts = %d, want 1", len(agent.judgePrompts))
+	}
+	prompt := agent.judgePrompts[0]
+	if len(prompt) >= 1<<20 {
+		t.Fatalf("bounded application judge prompt = %d bytes, want below 1 MiB", len(prompt))
+	}
+	for _, marker := range []string{"transcript_sha256", "transcript_bytes", "transcript_truncated"} {
+		if !strings.Contains(prompt, marker) {
+			t.Fatalf("bounded application judge prompt omitted %q", marker)
+		}
+	}
+	if strings.Contains(prompt, strings.Repeat("oversized command output ", 100)) {
+		t.Fatal("application judge prompt inlined the oversized command output")
 	}
 }
 
