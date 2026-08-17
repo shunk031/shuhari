@@ -89,6 +89,23 @@ func groundAbsence(claim *AbsenceClaim, artifact string) evidenceGrounding {
 	return evidenceGrounding{Kind: evidenceGroundingAbsence, Score: 1, Observation: query}
 }
 
+func groundDeclaredAbsence(patterns []string, artifact string) evidenceGrounding {
+	if len(patterns) == 0 {
+		return evidenceGrounding{Kind: evidenceGroundingHallucination}
+	}
+	for _, pattern := range patterns {
+		if match, ok := findArtifactQuery(pattern, artifact); ok {
+			return evidenceGrounding{
+				Kind:        evidenceGroundingContradiction,
+				Score:       1,
+				Span:        match.Span,
+				Observation: match.Observation,
+			}
+		}
+	}
+	return evidenceGrounding{Kind: evidenceGroundingAbsence, Score: 1, Observation: strings.Join(patterns, "\n")}
+}
+
 type artifactQueryMatch struct {
 	Span        string
 	Observation string
@@ -121,52 +138,6 @@ func findArtifactQuery(query, artifact string) (artifactQueryMatch, bool) {
 		return artifactQueryMatch{Span: location, Observation: strings.TrimSpace(line)}, true
 	}
 	return artifactQueryMatch{}, false
-}
-
-func supportsAbsenceClaim(assertion string, query string) bool {
-	normalizedQuery := strings.ToLower(normalizeEvidenceText(query))
-	if normalizedQuery == "" {
-		return false
-	}
-	for _, clause := range absenceAssertionClauses(assertion) {
-		if strings.Contains(clause, normalizedQuery) || absenceQueryMatchesNegatedAction(clause, normalizedQuery) {
-			return true
-		}
-	}
-	return false
-}
-
-func absenceAssertionClauses(assertion string) []string {
-	normalized := strings.ToLower(normalizeEvidenceText(assertion))
-	clauses := absenceClauseBoundaryPattern.Split(normalized, -1)
-	negative := make([]string, 0, len(clauses))
-	for _, clause := range clauses {
-		if absenceAssertionCuePattern.MatchString(clause) {
-			negative = append(negative, clause)
-		}
-	}
-	return negative
-}
-
-func absenceQueryMatchesNegatedAction(clause, query string) bool {
-	// A command-shaped query may not appear verbatim in a prose clause. Match
-	// only the negated clause's leading action so unrelated commands stay invalid.
-	cue := absenceAssertionCuePattern.FindStringIndex(clause)
-	if cue == nil {
-		return false
-	}
-	actionTokens := tokenizeGroundingText(clause[cue[1]:])
-	queryTokens := tokenizeGroundingText(query)
-	if len(actionTokens) == 0 || len(queryTokens) == 0 {
-		return false
-	}
-	action := actionTokens[0].Value
-	for _, token := range queryTokens {
-		if token.Value == action {
-			return true
-		}
-	}
-	return false
 }
 
 func groundParaphrase(quote, artifact string) evidenceGrounding {

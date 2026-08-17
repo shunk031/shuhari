@@ -16,12 +16,13 @@ type Suite struct {
 }
 
 type Case struct {
-	ID              string           `json:"id"`
-	Prompt          string           `json:"prompt"`
-	ExpectedOutput  string           `json:"expected_output"`
-	Files           []string         `json:"files,omitempty"`
-	Assertions      []string         `json:"assertions,omitempty"`
-	RequiredActions []harness.Action `json:"required_actions,omitempty"`
+	ID                string              `json:"id"`
+	Prompt            string              `json:"prompt"`
+	ExpectedOutput    string              `json:"expected_output"`
+	Files             []string            `json:"files,omitempty"`
+	Assertions        []string            `json:"assertions,omitempty"`
+	ForbiddenPatterns map[string][]string `json:"-"`
+	RequiredActions   []harness.Action    `json:"required_actions,omitempty"`
 }
 
 func (c Case) effectiveAssertions() []string {
@@ -65,7 +66,10 @@ type runResult struct {
 }
 
 type AbsenceClaim struct {
-	Query string `json:"query"`
+	NegatedClause     string   `json:"negated_clause,omitempty"`
+	Query             string   `json:"query,omitempty"`
+	Rationale         string   `json:"rationale,omitempty"`
+	ForbiddenPatterns []string `json:"forbidden_patterns,omitempty"`
 }
 
 type AssertionResult struct {

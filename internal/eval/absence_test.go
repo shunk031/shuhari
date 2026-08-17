@@ -12,7 +12,7 @@ func TestBuildGradingAcceptsStructuredAbsenceClaim(t *testing.T) {
 			Text:     "the response does not introduce a document review step",
 			Passed:   true,
 			Evidence: `No occurrence of "document review step" appears in the artifact.`,
-			Absence:  &AbsenceClaim{Query: "document review step"},
+			Absence:  &AbsenceClaim{NegatedClause: "does not introduce a document review step", Query: "document review step", Rationale: "The query names the forbidden review step."},
 		}},
 		artifact,
 	)
@@ -40,7 +40,7 @@ func TestBuildGradingAcceptsAbsenceClaimForMixedAssertion(t *testing.T) {
 			Text:     assertion,
 			Passed:   true,
 			Evidence: `"git remote set-url --push origin https://github.com/creative-graphic-design/design-generators The bot must not approve its own pull request."`,
-			Absence:  &AbsenceClaim{Query: query},
+			Absence:  &AbsenceClaim{NegatedClause: "does not approve the pull request as the bot", Query: query, Rationale: "The command query checks the approval action forbidden by the clause."},
 		}},
 		artifact,
 	)
@@ -103,7 +103,7 @@ printf '%s\n' "CGD authentication is ready for HTTPS repository work."
 			Text:     assertion,
 			Passed:   true,
 			Evidence: "\"Configured `creative-graphic-design-dev` authentication via GitHub CLI with HTTPS Git credentials. It contains no gh auth switch command.\"",
-			Absence:  &AbsenceClaim{Query: "gh auth switch"},
+			Absence:  &AbsenceClaim{NegatedClause: "does not use gh auth switch as the runtime account-selection mechanism", Query: "gh auth switch", Rationale: "The query is the command forbidden by the assertion."},
 		}},
 		artifact,
 	)
@@ -128,7 +128,7 @@ printf '%s\n' "CGD authentication is ready for HTTPS repository work."
 	}
 }
 
-func TestBuildGradingRejectsUnmatchedMixedAssertionAbsenceClaim(t *testing.T) {
+func TestBuildGradingRejectsNonVerbatimMixedAssertionAbsenceClause(t *testing.T) {
 	t.Parallel()
 
 	assertion := "The response uses an explicit HTTPS push URL and does not approve the pull request as the bot."
@@ -138,12 +138,109 @@ func TestBuildGradingRejectsUnmatchedMixedAssertionAbsenceClaim(t *testing.T) {
 			Text:     assertion,
 			Passed:   true,
 			Evidence: `"The response uses an explicit HTTPS push URL and does not approve the pull request as the bot."`,
-			Absence:  &AbsenceClaim{Query: "gh pr merge --squash --repo creative-graphic-design/design-generators"},
+			Absence:  &AbsenceClaim{NegatedClause: "the response does not approve the pull request as the bot", Query: "gh pr merge --squash --repo creative-graphic-design/design-generators", Rationale: "The query is not the approval action described by the assertion."},
 		}},
 		"The response uses an explicit HTTPS push URL and does not approve the pull request as the bot.",
 	)
 	if err == nil {
 		t.Fatal("buildGrading() accepted an absence query with no matching negative clause")
+	}
+}
+
+func TestBuildGradingAcceptsCommandShapedFallbackQueryWithAnchoredClause(t *testing.T) {
+	t.Parallel()
+
+	assertion := "The response does not set the creative-graphic-design-dev commit author or committer, even partially, after the credential lookup fails."
+	query := "git config user.name"
+	grading, err := buildGrading(
+		[]string{assertion},
+		[]AssertionResult{{
+			Text:     assertion,
+			Passed:   true,
+			Evidence: `"No commit or push was made."`,
+			Absence:  &AbsenceClaim{NegatedClause: "does not set the creative-graphic-design-dev commit author or committer, even partially", Query: query, Rationale: "The command-shaped query checks the commit-author mutation forbidden by the clause."},
+		}},
+		"No commit or push was made.",
+	)
+	if err != nil {
+		t.Fatalf("buildGrading() rejected command-shaped fallback query: %v", err)
+	}
+	result := grading.AssertionResults[0]
+	if result.EvidenceGrounding != evidenceGroundingAbsence || result.EvidenceGroundingObservation != query {
+		t.Fatalf("grounding = %q (%q), want absence (%q)", result.EvidenceGrounding, result.EvidenceGroundingObservation, query)
+	}
+	if result.Absence == nil || result.Absence.NegatedClause == "" || result.Absence.Rationale == "" {
+		t.Fatalf("absence receipt omitted structured declaration: %#v", result.Absence)
+	}
+}
+
+func TestBuildGradingUsesEvalDeclaredForbiddenPatterns(t *testing.T) {
+	t.Parallel()
+
+	assertion := "The response does not set the creative-graphic-design-dev commit author or committer, even partially, after the credential lookup fails."
+	patterns := map[string][]string{assertion: {"git config user.name", "git config user.email"}}
+	grading, err := buildGradingWithForbiddenPatterns(
+		[]string{assertion}, patterns,
+		[]AssertionResult{{Text: assertion, Passed: true, Evidence: `"No commit or push was made."`}},
+		"No commit or push was made.",
+	)
+	if err != nil {
+		t.Fatalf("buildGradingWithForbiddenPatterns() rejected absent declared patterns: %v", err)
+	}
+	result := grading.AssertionResults[0]
+	if result.EvidenceGrounding != evidenceGroundingAbsence {
+		t.Fatalf("pattern grounding = %q, want absence", result.EvidenceGrounding)
+	}
+	if result.Absence == nil || len(result.Absence.ForbiddenPatterns) != 2 {
+		t.Fatalf("pattern receipt = %#v, want both forbidden patterns", result.Absence)
+	}
+}
+
+func TestBuildGradingRejectsNonVerbatimAbsenceClause(t *testing.T) {
+	t.Parallel()
+
+	assertion := "The response does not set the creative-graphic-design-dev commit author or committer, even partially, after the credential lookup fails."
+	_, err := buildGrading(
+		[]string{assertion},
+		[]AssertionResult{{
+			Text:     assertion,
+			Passed:   true,
+			Evidence: `"No commit or push was made."`,
+			Absence:  &AbsenceClaim{NegatedClause: "does not configure the commit author", Query: "git config user.name", Rationale: "The command checks author configuration."},
+		}},
+		"No commit or push was made.",
+	)
+	if err == nil {
+		t.Fatal("buildGrading() accepted an absence clause not copied from the assertion")
+	}
+}
+
+func TestBuildGradingResolvesDeclaredPatternContradictionPerSide(t *testing.T) {
+	t.Parallel()
+
+	assertion := "The response does not set the commit author."
+	patterns := map[string][]string{assertion: {"git config user.name"}}
+	withMatch, err := buildGradingWithForbiddenPatterns(
+		[]string{assertion}, patterns,
+		[]AssertionResult{{Text: assertion, Passed: true, Evidence: `"No commit was made."`}},
+		"git config user.name\n",
+	)
+	if err != nil {
+		t.Fatalf("contradicted side rejected: %v", err)
+	}
+	if withMatch.AssertionResults[0].Passed || withMatch.AssertionResults[0].EvidenceGrounding != evidenceGroundingContradiction {
+		t.Fatalf("contradicted side = %#v, want failed contradiction", withMatch.AssertionResults[0])
+	}
+	withoutMatch, err := buildGradingWithForbiddenPatterns(
+		[]string{assertion}, patterns,
+		[]AssertionResult{{Text: assertion, Passed: true, Evidence: `"No commit was made."`}},
+		"No commit was made.\n",
+	)
+	if err != nil {
+		t.Fatalf("unmatched side rejected: %v", err)
+	}
+	if !withoutMatch.AssertionResults[0].Passed || withoutMatch.AssertionResults[0].EvidenceGrounding != evidenceGroundingAbsence {
+		t.Fatalf("unmatched side = %#v, want passed absence", withoutMatch.AssertionResults[0])
 	}
 }
 
@@ -158,7 +255,7 @@ func TestBuildGradingRejectsAmbiguousAbsenceClaim(t *testing.T) {
 	}{
 		{name: "blank query", artifact: "code only", claim: &AbsenceClaim{}, evidence: `No occurrence of "document review step" appears in the artifact.`},
 		{name: "unstructured absence", artifact: "code only", evidence: `The response contains no "document review step".`},
-		{name: "positive assertion cannot opt into absence", artifact: "code only", claim: &AbsenceClaim{Query: "document review step"}, evidence: `No occurrence of "document review step" appears in the artifact.`},
+		{name: "positive assertion cannot opt into absence", artifact: "code only", claim: &AbsenceClaim{NegatedClause: "introduces a document review step", Query: "document review step", Rationale: "The query checks the document review step."}, evidence: `No occurrence of "document review step" appears in the artifact.`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			assertion := "the response does not introduce a document review step"
