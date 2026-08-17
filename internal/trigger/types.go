@@ -3,8 +3,9 @@ package trigger
 import "time"
 
 const (
-	triggerArtifactSchemaVersion = "2"
-	triggerManifestSchemaVersion = "2"
+	triggerArtifactSchemaVersion     = "3"
+	triggerManifestSchemaVersion     = "2"
+	applicationArtifactSchemaVersion = "1"
 )
 
 type Case struct {
@@ -41,7 +42,8 @@ type Report struct {
 }
 
 type Measurement struct {
-	Results map[string][]bool `json:"target_read"`
+	Reads        map[string][]bool `json:"target_read"`
+	Applications map[string][]bool `json:"target_applied"`
 }
 
 type Policy struct {

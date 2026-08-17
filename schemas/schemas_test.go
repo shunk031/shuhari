@@ -55,3 +55,22 @@ func TestTimingSchemaRequiresMeasuredAttemptErrors(t *testing.T) {
 		t.Fatal("Validate() accepted an attempt error without a timestamp")
 	}
 }
+
+func TestTriggerApplicationSchemaRejectsContradictoryVerdict(t *testing.T) {
+	t.Parallel()
+
+	artifact := map[string]any{
+		"schema_version": "1",
+		"target_read":    true,
+		"verdict":        "declined",
+		"applied":        false,
+		"evidence":       "The agent explicitly declined the skill.",
+	}
+	if err := Validate("trigger-application", artifact); err != nil {
+		t.Fatalf("Validate() rejected a consistent trigger application artifact: %v", err)
+	}
+	artifact["applied"] = true
+	if err := Validate("trigger-application", artifact); err == nil {
+		t.Fatal("Validate() accepted a declined verdict marked as applied")
+	}
+}

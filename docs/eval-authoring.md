@@ -4,8 +4,8 @@ Write cases that isolate one observable behavior and provide every input they ne
 
 ## Trigger cases
 
-- Positive cases use realistic, in-domain prompts that should lead the agent to consult the skill; a prompt outside its trigger domain measures nothing.
-- A `should_trigger: false` case measures selection frequency, and the default policy judges that frequency by trial majority; guard harmful application with assertions in a paired eval case.
+- Positive cases use realistic, in-domain prompts that should lead the agent to apply the skill; consultation without application does not count.
+- A `should_trigger: false` case measures application frequency by trial majority; reading and explicitly declining an out-of-scope skill is a non-trigger.
 - Negative controls are near-misses that share the skill's keywords or concepts; an obviously irrelevant prompt tests nothing.
 
 ## Evaluation cases

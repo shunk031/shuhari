@@ -36,7 +36,8 @@ type triggerVerdict struct {
 	Security      harness.SecurityResolution `json:"security"`
 	DecisionRule  string                     `json:"decision_rule"`
 	Passed        bool                       `json:"passed"`
-	Results       map[string][]bool          `json:"target_read"`
+	Reads         map[string][]bool          `json:"target_read"`
+	Applications  map[string][]bool          `json:"target_applied"`
 	Reasons       []string                   `json:"reasons,omitempty"`
 	Error         string                     `json:"error,omitempty"`
 }
@@ -177,7 +178,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	}
 	measurement, runErr := measure(ctx, suite, agent, config, security, iteration)
 	if runErr != nil {
-		summary := triggerVerdict{SchemaVersion: triggerArtifactSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: false, Results: measurement.Results, Error: runErr.Error()}
+		summary := triggerVerdict{SchemaVersion: triggerArtifactSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: false, Reads: measurement.Reads, Applications: measurement.Applications, Error: runErr.Error()}
 		if err := contracts.Validate("trigger", summary); err != nil {
 			return Report{Workspace: iteration}, err
 		}
@@ -186,7 +187,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	}
 	reasons := ApplyPolicy(suite, measurement, Policy{Trials: config.Trials, StrictAllTrials: config.StrictAllTrials})
 	report := Report{Passed: len(reasons) == 0, Workspace: iteration, Reasons: reasons}
-	summary := triggerVerdict{SchemaVersion: triggerArtifactSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: report.Passed, Results: measurement.Results, Reasons: reasons}
+	summary := triggerVerdict{SchemaVersion: triggerArtifactSchemaVersion, Security: security, DecisionRule: decisionRule(config.StrictAllTrials), Passed: report.Passed, Reads: measurement.Reads, Applications: measurement.Applications, Reasons: reasons}
 	if err := contracts.Validate("trigger", summary); err != nil {
 		return report, err
 	}
@@ -214,10 +215,11 @@ func measure(ctx context.Context, suite Suite, agent harness.Harness, config Con
 	}
 	close(tasks)
 	type outcome struct {
-		Case  Case
-		Trial int
-		Read  bool
-		Err   error
+		Case    Case
+		Trial   int
+		Read    bool
+		Applied bool
+		Err     error
 	}
 	outcomes := make(chan outcome, len(suite.Cases)*config.Trials)
 	workers := config.Jobs
@@ -230,14 +232,15 @@ func measure(ctx context.Context, suite Suite, agent harness.Harness, config Con
 		go func() {
 			defer group.Done()
 			for item := range tasks {
-				read, err := executeCase(ctx, suite, agent, config, security, iteration, item.Case, item.Trial)
-				outcomes <- outcome{Case: item.Case, Trial: item.Trial, Read: read, Err: err}
+				result, err := executeCase(ctx, suite, agent, config, security, iteration, item.Case, item.Trial)
+				outcomes <- outcome{Case: item.Case, Trial: item.Trial, Read: result.TargetRead, Applied: result.Applied, Err: err}
 			}
 		}()
 	}
 	group.Wait()
 	close(outcomes)
 	readsByTrial := map[string]map[int]bool{}
+	applicationsByTrial := map[string]map[int]bool{}
 	var firstError error
 	for item := range outcomes {
 		if item.Err != nil && firstError == nil {
@@ -248,41 +251,49 @@ func measure(ctx context.Context, suite Suite, agent harness.Harness, config Con
 				readsByTrial[item.Case.ID] = map[int]bool{}
 			}
 			readsByTrial[item.Case.ID][item.Trial] = item.Read
+			if applicationsByTrial[item.Case.ID] == nil {
+				applicationsByTrial[item.Case.ID] = map[int]bool{}
+			}
+			applicationsByTrial[item.Case.ID][item.Trial] = item.Applied
 		}
 	}
 	reads := map[string][]bool{}
+	applications := map[string][]bool{}
 	for _, item := range suite.Cases {
 		for trial := 1; trial <= config.Trials; trial++ {
 			if value, ok := readsByTrial[item.ID][trial]; ok {
 				reads[item.ID] = append(reads[item.ID], value)
 			}
+			if value, ok := applicationsByTrial[item.ID][trial]; ok {
+				applications[item.ID] = append(applications[item.ID], value)
+			}
 		}
 	}
 	if firstError != nil {
-		return Measurement{Results: reads}, firstError
+		return Measurement{Reads: reads, Applications: applications}, firstError
 	}
-	return Measurement{Results: reads}, nil
+	return Measurement{Reads: reads, Applications: applications}, nil
 }
 
 func ApplyPolicy(suite Suite, measurement Measurement, policy Policy) []string {
 	var reasons []string
 	for _, item := range suite.Cases {
-		reads := measurement.Results[item.ID]
-		if len(reads) != policy.Trials || !casePass(reads, item.ShouldTrigger, policy.StrictAllTrials) {
+		applications := measurement.Applications[item.ID]
+		if len(applications) != policy.Trials || !casePass(applications, item.ShouldTrigger, policy.StrictAllTrials) {
 			reasons = append(reasons, fmt.Sprintf("%s: trigger outcomes did not satisfy policy", item.ID))
 		}
 	}
 	return reasons
 }
 
-func executeCase(ctx context.Context, suite Suite, agent harness.Harness, config Config, security harness.SecurityResolution, iteration string, item Case, trial int) (bool, error) {
+func executeCase(ctx context.Context, suite Suite, agent harness.Harness, config Config, security harness.SecurityResolution, iteration string, item Case, trial int) (applicationArtifact, error) {
 	runDir := filepath.Join(iteration, "case-"+safeName(item.ID), fmt.Sprintf("trial-%d", trial))
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		return false, fmt.Errorf("create trigger run directory: %w", err)
+		return applicationArtifact{}, fmt.Errorf("create trigger run directory: %w", err)
 	}
 	workDir, err := os.MkdirTemp("", "shuhari-trigger-")
 	if err != nil {
-		return false, fmt.Errorf("create trigger work directory: %w", err)
+		return applicationArtifact{}, fmt.Errorf("create trigger work directory: %w", err)
 	}
 	defer os.RemoveAll(workDir)
 	result, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: item.Prompt, Target: &harness.Target{Kind: harness.TargetSkill, Name: suite.SkillName, SourcePath: suite.SkillPath}, Model: config.Model, ReasoningEffort: config.ReasoningEffort, Security: security, Timeout: config.Timeout})
@@ -290,18 +301,22 @@ func executeCase(ctx context.Context, suite Suite, agent harness.Harness, config
 		runErr := fmt.Errorf("%s trial %d: %w", item.ID, trial, err)
 		if attempts := harness.AttemptsFromError(err); attempts.AttemptCount > 0 {
 			if writeErr := receipt.WriteTiming(filepath.Join(runDir, "timing.json"), harness.Usage{}, 0, attempts); writeErr != nil {
-				return false, errors.Join(runErr, writeErr)
+				return applicationArtifact{}, errors.Join(runErr, writeErr)
 			}
 		}
-		return false, runErr
+		return applicationArtifact{}, runErr
 	}
 	if err := os.WriteFile(filepath.Join(runDir, "transcript.jsonl"), result.Transcript, 0o644); err != nil {
-		return false, fmt.Errorf("write trigger transcript: %w", err)
+		return applicationArtifact{}, fmt.Errorf("write trigger transcript: %w", err)
 	}
 	if err := receipt.WriteTiming(filepath.Join(runDir, "timing.json"), result.Usage, result.Duration, result.Attempts); err != nil {
-		return false, err
+		return applicationArtifact{}, err
 	}
-	return result.TargetRead, nil
+	application, err := classifyApplication(ctx, suite, agent, config, security, runDir, item, result)
+	if err != nil {
+		return application, fmt.Errorf("%s trial %d: %w", item.ID, trial, err)
+	}
+	return application, nil
 }
 
 func casePass(reads []bool, shouldTrigger, strict bool) bool {

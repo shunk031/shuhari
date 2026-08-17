@@ -4,7 +4,7 @@
   "title": "Shuhari trigger verdict artifact",
   "type": "object",
   "properties": {
-    "schema_version": { "const": "2" },
+    "schema_version": { "const": "3" },
     "security": { "$ref": "#/$defs/security" },
     "decision_rule": { "enum": ["majority", "strict"] },
     "passed": { "type": "boolean" },
@@ -15,10 +15,17 @@
         "items": { "type": "boolean" }
       }
     },
+    "target_applied": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "boolean" }
+      }
+    },
     "reasons": { "type": "array", "items": { "type": "string" } },
     "error": { "type": "string", "minLength": 1 }
   },
-  "required": ["schema_version", "security", "decision_rule", "passed", "target_read"],
+  "required": ["schema_version", "security", "decision_rule", "passed", "target_read", "target_applied"],
   "additionalProperties": false,
   "$defs": {
     "security": {
