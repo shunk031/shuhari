@@ -106,6 +106,25 @@ type trialJudgeInputs struct {
 	Comparator comparatorInput
 }
 
+type focusedGraderInput struct {
+	ID          string   `json:"id"`
+	Trial       int      `json:"trial"`
+	Assertions  []string `json:"assertions"`
+	A           string   `json:"A"`
+	B           string   `json:"B"`
+	AResponse   string   `json:"A_response"`
+	BResponse   string   `json:"B_response"`
+	AAssertions []string `json:"A_assertions"`
+	BAssertions []string `json:"B_assertions"`
+}
+
+type judgeRetryRequest struct {
+	Instructions string
+	Input        any
+}
+
+type judgeRetryBuilder func(error) (judgeRetryRequest, bool)
+
 func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results []runResult, config Config, judgeSecurity harness.SecurityResolution, iteration string) ([]gradedRun, int, int, []string, string, error) {
 	byKey := map[string]runResult{}
 	for _, result := range results {
@@ -224,10 +243,19 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 		var output judgeOutput
 		var trialEntries map[string]judgeEntry
 		var previousEntries map[string]judgeEntry
-		response, attempts, err := runValidatedStructuredJudge(ctx, agent, graderPrompt, graderInputs, graderSchema(), config, security, func(response string) error {
+		var focused *focusedGraderInput
+		focusedRetry := false
+		response, attempts, err := runValidatedStructuredJudgeWithRetry(ctx, agent, graderPrompt, graderInputs, graderSchema(), config, security, func(response string) error {
 			output = judgeOutput{}
 			if err := json.Unmarshal([]byte(response), &output); err != nil {
 				return fmt.Errorf("decode response: %w", err)
+			}
+			if focusedRetry {
+				err := validateFocusedGraderResponse(output, focused, previousEntries, item.Grader, &trialEntries)
+				if err == nil {
+					output.Cases = []judgeEntry{trialEntries[caseTrialKey(item.ID, item.Trial)]}
+				}
+				return err
 			}
 			if previousEntries != nil {
 				for index := range output.Cases {
@@ -246,6 +274,16 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 				return err
 			}
 			previousEntries = trialEntries
+			missingA := missingAssertions(item.Grader.Assertions, trialEntries[caseTrialKey(item.ID, item.Trial)].AAssertionResults)
+			missingB := missingAssertions(item.Grader.Assertions, trialEntries[caseTrialKey(item.ID, item.Trial)].BAssertionResults)
+			if len(missingA) > 0 || len(missingB) > 0 {
+				focused = &focusedGraderInput{
+					ID: item.Grader.ID, Trial: item.Grader.Trial, Assertions: mergeAssertionsInOrder(item.Grader.Assertions, missingA, missingB),
+					A: item.Grader.A, B: item.Grader.B, AResponse: item.Grader.AResponse, BResponse: item.Grader.BResponse,
+					AAssertions: missingA, BAssertions: missingB,
+				}
+				return fmt.Errorf("grader omitted required assertions for A=%v B=%v", missingA, missingB)
+			}
 			entry := trialEntries[caseTrialKey(item.ID, item.Trial)]
 			if _, err := buildGrading(item.Grader.Assertions, entry.AAssertionResults, item.Grader.A); err != nil {
 				return fmt.Errorf("validate A evidence: %w", err)
@@ -254,6 +292,15 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 				return fmt.Errorf("validate B evidence: %w", err)
 			}
 			return nil
+		}, func(_ error) (judgeRetryRequest, bool) {
+			if focused == nil {
+				return judgeRetryRequest{}, false
+			}
+			focusedRetry = true
+			return judgeRetryRequest{
+				Instructions: strings.TrimSpace(graderPrompt) + "\n\nThe previous response omitted required assertion results. Return results only for the assertions listed in A_assertions and B_assertions; leave the other side's result array empty. Do not repeat any already validated assertion.\n",
+				Input:        []focusedGraderInput{*focused},
+			}, true
 		})
 		retries = append(retries, decorateJudgeAttempts("grader", item.ID, item.Trial, attempts)...)
 		if err != nil {
@@ -303,6 +350,70 @@ func preserveValidatedAssertionResults(expected []string, previous, current []As
 	return merged
 }
 
+func missingAssertions(expected []string, actual []AssertionResult) []string {
+	seen := make(map[string]bool, len(actual))
+	for _, result := range actual {
+		seen[result.Text] = true
+	}
+	missing := make([]string, 0)
+	for _, assertion := range expected {
+		if !seen[assertion] {
+			missing = append(missing, assertion)
+		}
+	}
+	return missing
+}
+
+func mergeAssertionsInOrder(expected []string, sides ...[]string) []string {
+	wanted := map[string]bool{}
+	for _, assertions := range sides {
+		for _, assertion := range assertions {
+			wanted[assertion] = true
+		}
+	}
+	merged := make([]string, 0, len(wanted))
+	for _, assertion := range expected {
+		if wanted[assertion] {
+			merged = append(merged, assertion)
+		}
+	}
+	return merged
+}
+
+func validateFocusedGraderResponse(output judgeOutput, focused *focusedGraderInput, previous map[string]judgeEntry, input judgeInput, destination *map[string]judgeEntry) error {
+	if focused == nil {
+		return errors.New("focused grader retry has no requested assertions")
+	}
+	entries, err := validateGraderEntries(output, []judgeInput{{ID: focused.ID, Trial: focused.Trial}})
+	if err != nil {
+		return err
+	}
+	entry := entries[caseTrialKey(focused.ID, focused.Trial)]
+	if len(entry.AAssertionResults) != len(focused.AAssertions) || len(entry.BAssertionResults) != len(focused.BAssertions) {
+		return fmt.Errorf("focused grader retry returned A=%d B=%d assertions, want A=%d B=%d", len(entry.AAssertionResults), len(entry.BAssertionResults), len(focused.AAssertions), len(focused.BAssertions))
+	}
+	if _, err := buildGrading(focused.AAssertions, entry.AAssertionResults, input.A); err != nil {
+		return fmt.Errorf("validate focused A evidence: %w", err)
+	}
+	if _, err := buildGrading(focused.BAssertions, entry.BAssertionResults, input.B); err != nil {
+		return fmt.Errorf("validate focused B evidence: %w", err)
+	}
+	prior, ok := previous[caseTrialKey(focused.ID, focused.Trial)]
+	if !ok {
+		return fmt.Errorf("focused grader retry has no prior case %s", caseTrialKey(focused.ID, focused.Trial))
+	}
+	merged := judgeEntry{ID: prior.ID, Trial: prior.Trial, AAssertionResults: append(append([]AssertionResult{}, prior.AAssertionResults...), entry.AAssertionResults...), BAssertionResults: append(append([]AssertionResult{}, prior.BAssertionResults...), entry.BAssertionResults...)}
+	if _, err := buildGrading(input.Assertions, merged.AAssertionResults, input.A); err != nil {
+		return fmt.Errorf("validate merged A evidence: %w", err)
+	}
+	if _, err := buildGrading(input.Assertions, merged.BAssertionResults, input.B); err != nil {
+		return fmt.Errorf("validate merged B evidence: %w", err)
+	}
+	*destination = map[string]judgeEntry{caseTrialKey(merged.ID, merged.Trial): merged}
+	output.Cases = []judgeEntry{merged}
+	return nil
+}
+
 func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config, security harness.SecurityResolution) (map[string]comparatorEntry, string, []judgeTransportRetry, error) {
 	merged := comparatorOutput{}
 	entries := map[string]comparatorEntry{}
@@ -337,18 +448,32 @@ func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs [
 }
 
 func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, security harness.SecurityResolution, validate func(string) error) (string, []judgeCallAttempts, error) {
+	return runValidatedStructuredJudgeWithRetry(ctx, agent, instructions, input, schema, config, security, validate, nil)
+}
+
+func runValidatedStructuredJudgeWithRetry(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, security harness.SecurityResolution, validate func(string) error, retryBuilder judgeRetryBuilder) (string, []judgeCallAttempts, error) {
 	var response string
 	responses := make([]string, 0, 2)
 	var callAttempts []judgeCallAttempts
 	var validationErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		attemptInstructions := instructions
+		attemptInput := input
 		if validationErr != nil {
-			attemptInstructions = strings.TrimSpace(instructions) + "\n\nThe previous response failed validation. Return a corrected response for the original input.\nValidation error: " + validationErr.Error()
+			if retryBuilder != nil {
+				if retry, ok := retryBuilder(validationErr); ok {
+					attemptInstructions = retry.Instructions
+					attemptInput = retry.Input
+				} else {
+					attemptInstructions = strings.TrimSpace(instructions) + "\n\nThe previous response failed validation. Return a corrected response for the original input.\nValidation error: " + validationErr.Error()
+				}
+			} else {
+				attemptInstructions = strings.TrimSpace(instructions) + "\n\nThe previous response failed validation. Return a corrected response for the original input.\nValidation error: " + validationErr.Error()
+			}
 		}
 		var err error
 		var attempts harness.AttemptEvidence
-		response, attempts, err = runStructuredJudge(ctx, agent, attemptInstructions, input, schema, config, security)
+		response, attempts, err = runStructuredJudge(ctx, agent, attemptInstructions, attemptInput, schema, config, security)
 		if attempts.AttemptCount > 1 || len(attempts.AttemptErrors) > 0 {
 			callAttempts = append(callAttempts, judgeCallAttempts{ValidationAttempt: attempt + 1, AttemptEvidence: attempts})
 		}
