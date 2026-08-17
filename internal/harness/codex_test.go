@@ -514,6 +514,54 @@ func TestWriteCodexProfileDangerFullAccessOnlyHardensCommandEnvironment(t *testi
 	}
 }
 
+func TestWriteCodexProfilePropagatesParentProxiesWithoutCredentials(t *testing.T) {
+	proxyValues := map[string]string{
+		"HTTP_PROXY":  "http://upper-http-proxy.invalid:8080",
+		"HTTPS_PROXY": "http://upper-https-proxy.invalid:8080",
+		"ALL_PROXY":   "http://upper-all-proxy.invalid:8080",
+		"NO_PROXY":    "localhost,127.0.0.1",
+		"http_proxy":  "http://lower-http-proxy.invalid:8080",
+		"https_proxy": "http://lower-https-proxy.invalid:8080",
+		"all_proxy":   "http://lower-all-proxy.invalid:8080",
+		"no_proxy":    "localhost,::1",
+	}
+	for name, value := range proxyValues {
+		t.Setenv(name, value)
+	}
+	for name, value := range map[string]string{
+		"OPENAI_API_KEY":        "synthetic-openai-key",
+		"GEN_AI_GATEWAY_PAT":    "synthetic-gateway-pat",
+		"AWS_ACCESS_KEY_ID":     "synthetic-access-key",
+		"AWS_SECRET_ACCESS_KEY": "synthetic-secret-key",
+		"GH_TOKEN":              "synthetic-gh-token",
+		"GITHUB_TOKEN":          "synthetic-github-token",
+	} {
+		t.Setenv(name, value)
+	}
+
+	codexHome := t.TempDir()
+	security := mustResolveCodexSecurity(t, newCodex(Config{}), SecurityPolicy{Level: SandboxReadOnly, Network: true})
+	if err := writeCodexProfile(codexHome, Request{WorkDir: t.TempDir(), Security: security}); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(codexHome, "shuhari.config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := string(contents)
+	for name, value := range proxyValues {
+		expected := fmt.Sprintf("%s = %s", name, tomlString(value))
+		if !strings.Contains(profile, expected) {
+			t.Errorf("profile omitted parent proxy %s: %q\n%s", name, expected, profile)
+		}
+	}
+	for _, name := range []string{"OPENAI_API_KEY", "GEN_AI_GATEWAY_PAT", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GH_TOKEN", "GITHUB_TOKEN"} {
+		if strings.Contains(profile, name+" =") {
+			t.Errorf("profile propagated credential-class variable %s:\n%s", name, profile)
+		}
+	}
+}
+
 func TestCodexRetryRestoresPristineWorkDirectory(t *testing.T) {
 	t.Parallel()
 

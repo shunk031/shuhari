@@ -215,13 +215,26 @@ func forceNetworkEnabled(t *testing.T, codexHome string) {
 	}
 }
 
-func TestCodexCommandEnvironmentStripsGitHubCredentials(t *testing.T) {
+func TestCodexCommandEnvironmentStripsCredentialsAndPropagatesProxies(t *testing.T) {
 	codex, err := exec.LookPath("codex")
 	if err != nil {
 		codexSandboxUnavailable(t, "Codex CLI is not installed")
 	}
 
 	t.Setenv(NoCredentialBoundaryAcknowledgementEnv, "1")
+	proxyValues := map[string]string{
+		"HTTP_PROXY":  "http://upper-http-proxy.invalid:8080",
+		"HTTPS_PROXY": "http://upper-https-proxy.invalid:8080",
+		"ALL_PROXY":   "http://upper-all-proxy.invalid:8080",
+		"NO_PROXY":    "localhost,127.0.0.1",
+		"http_proxy":  "http://lower-http-proxy.invalid:8080",
+		"https_proxy": "http://lower-https-proxy.invalid:8080",
+		"all_proxy":   "http://lower-all-proxy.invalid:8080",
+		"no_proxy":    "localhost,::1",
+	}
+	for name, value := range proxyValues {
+		t.Setenv(name, value)
+	}
 	for _, level := range []SandboxLevel{SandboxIsolated, SandboxReadOnly, SandboxUnsandboxed} {
 		t.Run(string(level), func(t *testing.T) {
 			root, err := os.MkdirTemp("/tmp", "shuhari-env-test-")
@@ -259,7 +272,7 @@ func TestCodexCommandEnvironmentStripsGitHubCredentials(t *testing.T) {
 			} else {
 				arguments = append(arguments, "--permission-profile", "shuhari-eval")
 			}
-			arguments = append(arguments, "/bin/sh", "-c", `env | grep -E '^(GH|GITHUB)_' || true`)
+			arguments = append(arguments, "/bin/sh", "-c", `env | grep -E '^(GH|GITHUB|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy)=' || true`)
 			command := exec.Command(codex, arguments...)
 			command.Env = append(cleanEnvironment(codexHome),
 				"GH_TOKEN=synthetic-gh-token",
@@ -280,8 +293,16 @@ func TestCodexCommandEnvironmentStripsGitHubCredentials(t *testing.T) {
 				}
 				t.Fatalf("run Codex command environment probe: %v\n%s", err, failureOutput)
 			}
-			if strings.TrimSpace(string(output)) != "" {
-				t.Fatalf("evaluated command received GitHub credential variables in %s mode:\n%s", level, output)
+			text := string(output)
+			for name, value := range proxyValues {
+				if !strings.Contains(text, name+"="+value) {
+					t.Errorf("evaluated command did not receive parent proxy %s in %s mode:\n%s", name, level, text)
+				}
+			}
+			for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_AUTH", "GITHUB_CREDENTIAL"} {
+				if strings.Contains(text, name+"=") {
+					t.Errorf("evaluated command received GitHub credential variable %s in %s mode:\n%s", name, level, text)
+				}
 			}
 		})
 	}

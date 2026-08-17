@@ -192,6 +192,11 @@ const (
 	codexSecurityPolicyVersion = "codex-security-v2"
 )
 
+var proxyEnvironmentVariables = [...]string{
+	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+	"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+}
+
 func (*codexHarness) ResolveSecurity(_ context.Context, policy SecurityPolicy) (SecurityResolution, error) {
 	if err := ValidateSecurityPolicy(policy); err != nil {
 		var unsupported *UnsupportedSecurityPolicyError
@@ -921,6 +926,11 @@ func writeCodexProfile(codexHome string, request Request) error {
 	fmt.Fprintf(&builder, "PATH = %s\n", tomlString(commandPath))
 	fmt.Fprintf(&builder, "TMPDIR = %s\n", tomlString(commandTmp))
 	builder.WriteString("LANG = \"C.UTF-8\"\n")
+	for _, name := range proxyEnvironmentVariables {
+		if value, ok := os.LookupEnv(name); ok {
+			fmt.Fprintf(&builder, "%s = %s\n", name, tomlString(value))
+		}
+	}
 	if request.Security.SandboxLevel != SandboxUnsandboxed {
 		access := "write"
 		if request.Security.SandboxLevel == SandboxReadOnly {
@@ -1098,10 +1108,14 @@ func allowedEnvironmentVariable(name string) bool {
 	if strings.HasPrefix(name, "LC_") {
 		return true
 	}
+	for _, proxyName := range proxyEnvironmentVariables {
+		if name == proxyName {
+			return true
+		}
+	}
 	switch name {
 	case "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP", "LANG", "LANGUAGE", "TERM", "COLORTERM", "TZ",
-		"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
-		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy":
+		"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE":
 		return true
 	default:
 		return false
