@@ -23,6 +23,7 @@ type fakeHarness struct {
 	compareResponse string
 	requests        []harness.Request
 	runAttempts     harness.AttemptEvidence
+	resolvePolicies []harness.SecurityPolicy
 }
 
 type limitedHarness struct {
@@ -31,6 +32,16 @@ type limitedHarness struct {
 }
 
 type failingHarness struct{ fakeHarness }
+
+type unavailableHarness struct{ fakeHarness }
+
+func (*unavailableHarness) Probe(_ context.Context, securities ...harness.SecurityResolution) (harness.Identity, error) {
+	return harness.Identity{}, &harness.UnsupportedSecurityPolicyError{
+		Adapter: "fake",
+		Policy:  securities[0].Policy(),
+		Reason:  "native sandbox preflight failed",
+	}
+}
 
 func (h *failingHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
 	if len(request.OutputSchema) == 0 {
@@ -41,12 +52,40 @@ func (h *failingHarness) Run(_ context.Context, request harness.Request) (harnes
 
 func (h *limitedHarness) Capabilities() harness.Capabilities { return h.capabilities }
 
-func (*fakeHarness) Probe(context.Context) (harness.Identity, error) {
+func (*fakeHarness) Probe(context.Context, ...harness.SecurityResolution) (harness.Identity, error) {
 	return harness.Identity{Agent: "fake", Version: "1"}, nil
 }
 
 func (*fakeHarness) Capabilities() harness.Capabilities {
 	return harness.Capabilities{Skills: true, Instructions: true, TriggerEvidence: true}
+}
+
+func (h *fakeHarness) ResolveSecurity(_ context.Context, policy harness.SecurityPolicy) (harness.SecurityResolution, error) {
+	h.mu.Lock()
+	h.resolvePolicies = append(h.resolvePolicies, policy)
+	h.mu.Unlock()
+	return fakeSecurityResolution(policy), nil
+}
+
+func fakeSecurityResolution(policy harness.SecurityPolicy) harness.SecurityResolution {
+	network := harness.NetworkDenied
+	if policy.Network {
+		network = harness.NetworkAllowed
+	}
+	boundary := harness.CredentialBoundaryEnforced
+	if policy.Level == harness.SandboxUnsandboxed {
+		boundary = harness.CredentialBoundaryNone
+	}
+	return harness.SecurityResolution{
+		SandboxLevel:       policy.Level,
+		NetworkAccess:      network,
+		CredentialBoundary: boundary,
+		Adapter: harness.AdapterSecurity{
+			Name:         "fake",
+			NativeMode:   "fake-" + string(policy.Level),
+			PolicyDigest: "sha256:" + strings.Repeat("a", 64),
+		},
+	}
 }
 
 func (h *fakeHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
@@ -75,7 +114,8 @@ func TestExecuteTaskPersistsTransportRetryEvidence(t *testing.T) {
 	suite := Suite{Kind: harness.TargetSkill, Name: "demo", Root: root, TargetPath: root}
 	iteration := t.TempDir()
 	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "stream disconnected before completion"}}}
-	_, err := executeTask(context.Background(), suite, &fakeHarness{runAttempts: attempts}, Config{Timeout: time.Second}, iteration, runTask{Case: Case{ID: "one", Prompt: "task"}, Trial: 1, Variant: variantWithSkill})
+	security := fakeSecurityResolution(harness.SecurityPolicy{Level: harness.SandboxIsolated})
+	_, err := executeTask(context.Background(), suite, &fakeHarness{runAttempts: attempts}, Config{Timeout: time.Second}, security, iteration, runTask{Case: Case{ID: "one", Prompt: "task"}, Trial: 1, Variant: variantWithSkill})
 	if err != nil {
 		t.Fatalf("executeTask() error = %v", err)
 	}
@@ -114,8 +154,12 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_token
 	if err != nil {
 		t.Fatal(err)
 	}
+	security, err := agent.ResolveSecurity(context.Background(), harness.SecurityPolicy{Level: harness.SandboxIsolated})
+	if err != nil {
+		t.Fatal(err)
+	}
 	iteration := t.TempDir()
-	_, err = executeTask(context.Background(), Suite{Kind: harness.TargetSkill, Name: "demo"}, agent, Config{Timeout: 2 * time.Second}, iteration, runTask{Case: Case{ID: "one", Prompt: "task"}, Trial: 1, Variant: variantWithoutSkill})
+	_, err = executeTask(context.Background(), Suite{Kind: harness.TargetSkill, Name: "demo"}, agent, Config{Timeout: 2 * time.Second}, security, iteration, runTask{Case: Case{ID: "one", Prompt: "task"}, Trial: 1, Variant: variantWithoutSkill})
 	if err != nil {
 		t.Fatalf("executeTask() error = %v", err)
 	}
@@ -153,7 +197,8 @@ func TestExecuteTaskPersistsExhaustedTransportAttempts(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
 	iteration := t.TempDir()
-	_, err := executeTask(context.Background(), Suite{Kind: harness.TargetSkill, Name: "demo", Root: root, TargetPath: root}, &exhaustedRetryHarness{}, Config{Timeout: time.Second}, iteration, runTask{Case: Case{ID: "one", Prompt: "task"}, Trial: 1, Variant: variantWithSkill})
+	security := fakeSecurityResolution(harness.SecurityPolicy{Level: harness.SandboxIsolated})
+	_, err := executeTask(context.Background(), Suite{Kind: harness.TargetSkill, Name: "demo", Root: root, TargetPath: root}, &exhaustedRetryHarness{}, Config{Timeout: time.Second}, security, iteration, runTask{Case: Case{ID: "one", Prompt: "task"}, Trial: 1, Variant: variantWithSkill})
 	if err == nil || !errors.Is(err, harness.ErrTransient) {
 		t.Fatalf("executeTask() error = %v, want transport failure", err)
 	}
@@ -205,6 +250,9 @@ func TestRunWritesAgentSkillsWorkspaceAndCachesSuccess(t *testing.T) {
 	if !report.Passed || report.Cached {
 		t.Fatalf("report = %#v", report)
 	}
+	if len(agent.resolvePolicies) != 2 {
+		t.Fatalf("ResolveSecurity calls = %d, want one run and one judge resolution", len(agent.resolvePolicies))
+	}
 	for _, path := range []string{
 		filepath.Join(report.Workspace, "eval-1", "with_skill", "outputs", "response.md"),
 		filepath.Join(report.Workspace, "eval-1", "with_skill", "timing.json"),
@@ -247,8 +295,11 @@ func TestRunWritesAgentSkillsWorkspaceAndCachesSuccess(t *testing.T) {
 	if agent.runs != 4 { // candidate, baseline, grader, and comparator.
 		t.Fatalf("agent runs = %d, want 4", agent.runs)
 	}
+	if len(agent.resolvePolicies) != 4 {
+		t.Fatalf("ResolveSecurity calls after cache lookup = %d, want two per Run call", len(agent.resolvePolicies))
+	}
 	for _, request := range agent.requests {
-		if len(request.OutputSchema) == 0 && request.Network {
+		if len(request.OutputSchema) == 0 && request.Security.NetworkAccess == harness.NetworkAllowed {
 			t.Fatal("required_actions enabled network without --network")
 		}
 	}
@@ -260,8 +311,51 @@ func TestRunWritesAgentSkillsWorkspaceAndCachesSuccess(t *testing.T) {
 	if err := json.Unmarshal(contents, &benchmark); err != nil {
 		t.Fatal(err)
 	}
-	if benchmark.Security.CredentialBoundary != harness.CredentialBoundaryCodexSandbox {
+	if benchmark.Security.SandboxLevel != harness.SandboxIsolated || benchmark.Security.CredentialBoundary != harness.CredentialBoundaryEnforced {
 		t.Fatalf("benchmark credential boundary = %q", benchmark.Security.CredentialBoundary)
+	}
+	if benchmark.SchemaVersion != "2" {
+		t.Fatalf("benchmark schema version = %q, want 2", benchmark.SchemaVersion)
+	}
+	for _, request := range agent.requests {
+		want := benchmark.Security
+		if len(request.OutputSchema) > 0 {
+			want = fakeSecurityResolution(harness.SecurityPolicy{Level: harness.SandboxReadOnly})
+		}
+		if request.Security != want {
+			t.Fatalf("request security = %#v, want exact resolved value %#v", request.Security, want)
+		}
+	}
+	manifestContents, err := os.ReadFile(filepath.Join(report.Workspace, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		SchemaVersion string                     `json:"schema_version"`
+		Security      harness.SecurityResolution `json:"security"`
+		JudgeSecurity harness.SecurityResolution `json:"judge_security"`
+	}
+	if err := json.Unmarshal(manifestContents, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SchemaVersion != "2" || manifest.Security != benchmark.Security {
+		t.Fatalf("manifest security = %#v, benchmark security = %#v", manifest.Security, benchmark.Security)
+	}
+	if manifest.JudgeSecurity != fakeSecurityResolution(harness.SecurityPolicy{Level: harness.SandboxReadOnly}) {
+		t.Fatalf("manifest judge security = %#v", manifest.JudgeSecurity)
+	}
+}
+
+func TestRunRejectsUnavailableSandboxBeforeWritingWorkspace(t *testing.T) {
+	t.Parallel()
+
+	agent := &unavailableHarness{}
+	report, err := Run(context.Background(), Suite{Kind: harness.TargetSkill}, agent, cache.Store{Root: t.TempDir()}, Config{Trials: 1, Jobs: 1, Timeout: time.Second})
+	if err == nil || !errors.Is(err, harness.ErrUnsupportedSecurityPolicy) {
+		t.Fatalf("Run() error = %v, want ErrUnsupportedSecurityPolicy", err)
+	}
+	if report.Workspace != "" {
+		t.Fatalf("sandbox preflight failure wrote workspace %q", report.Workspace)
 	}
 }
 
@@ -314,9 +408,7 @@ func TestRunRejectsHarnessWithoutTargetCapability(t *testing.T) {
 	}
 }
 
-func TestRunCacheIncludesEffectiveSandboxOverride(t *testing.T) {
-	t.Setenv("SHUHARI_SANDBOX", "")
-
+func TestRunCacheIncludesSandboxLevel(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo")
 	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
 	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{"skill_name":"demo","evals":[{"id":"one","prompt":"task","expected_output":"candidate output","assertions":["correct"]}]}`)
@@ -333,18 +425,17 @@ func TestRunCacheIncludesEffectiveSandboxOverride(t *testing.T) {
 	compared, _ := json.Marshal(comparatorOutput{Cases: []comparatorEntry{{ID: "one", Trial: 1, Preferred: preferredLabel(mapping, variantWithSkill), Reason: "better"}}})
 	agent := &fakeHarness{judgeResponse: string(grader), compareResponse: string(compared)}
 	store := cache.Store{Root: filepath.Join(t.TempDir(), "cache")}
-	config := Config{Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), Sandbox: "workspace-write"}
+	config := Config{Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), SandboxLevel: "isolated"}
 	if _, err := Run(context.Background(), suite, agent, store, config); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SHUHARI_SANDBOX", "danger-full-access")
-	t.Setenv(harness.DangerFullAccessAcknowledgementEnv, "1")
+	config.SandboxLevel = "read-only"
 	report, err := Run(context.Background(), suite, agent, store, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.Cached || agent.runs != 8 {
-		t.Fatalf("sandbox override reused stale cache: cached=%v runs=%d", report.Cached, agent.runs)
+		t.Fatalf("sandbox change reused stale cache: cached=%v runs=%d", report.Cached, agent.runs)
 	}
 	contents, err := os.ReadFile(filepath.Join(report.Workspace, "benchmark.json"))
 	if err != nil {
@@ -354,8 +445,29 @@ func TestRunCacheIncludesEffectiveSandboxOverride(t *testing.T) {
 	if err := json.Unmarshal(contents, &benchmark); err != nil {
 		t.Fatal(err)
 	}
-	if benchmark.Security.CredentialBoundary != harness.CredentialBoundaryNone || benchmark.Security.SandboxMode != "danger-full-access" {
-		t.Fatalf("danger benchmark security = %#v", benchmark.Security)
+	if benchmark.Security.CredentialBoundary != harness.CredentialBoundaryEnforced || benchmark.Security.SandboxLevel != harness.SandboxReadOnly {
+		t.Fatalf("read-only benchmark security = %#v", benchmark.Security)
+	}
+}
+
+type invalidSecurityHarness struct{ fakeHarness }
+
+func (*invalidSecurityHarness) ResolveSecurity(_ context.Context, policy harness.SecurityPolicy) (harness.SecurityResolution, error) {
+	resolution := fakeSecurityResolution(policy)
+	resolution.Adapter.PolicyDigest = "x"
+	return resolution, nil
+}
+
+func TestRunRejectsInvalidResolvedSecurityBeforeWritingArtifacts(t *testing.T) {
+	t.Parallel()
+
+	agent := &invalidSecurityHarness{}
+	report, err := Run(context.Background(), Suite{Kind: harness.TargetSkill}, agent, cache.Store{Root: t.TempDir()}, Config{Trials: 1, Jobs: 1, Timeout: time.Second})
+	if err == nil || !strings.Contains(err.Error(), "security resolution") {
+		t.Fatalf("Run() error = %v, want invalid security resolution", err)
+	}
+	if report.Workspace != "" {
+		t.Fatalf("invalid security resolution wrote artifact workspace %q", report.Workspace)
 	}
 }
 
@@ -414,4 +526,51 @@ func TestBuildRunPromptDoesNotLeakEvaluatorExpectedOutput(t *testing.T) {
 	if !strings.Contains(prompt, item.Prompt) {
 		t.Fatalf("run prompt omitted task: %q", prompt)
 	}
+}
+
+func TestRunUsesUnsandboxedSecurityForJudgesWithoutResolvingAgain(t *testing.T) {
+	t.Setenv(harness.NoCredentialBoundaryAcknowledgementEnv, "1")
+
+	root := filepath.Join(t.TempDir(), "demo")
+	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
+	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{"skill_name":"demo","evals":[{"id":"one","prompt":"task","expected_output":"output"}]}`)
+	suite, err := LoadSkillSuite(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping := blindLabels("one", 1, variantWithSkill, variantWithoutSkill)
+	grades := []AssertionResult{{Text: "output", Passed: true, Evidence: `Observed "output".`}}
+	grader, _ := json.Marshal(judgeOutput{Cases: []judgeEntry{{ID: "one", Trial: 1, AAssertionResults: grades, BAssertionResults: grades}}})
+	compared, _ := json.Marshal(comparatorOutput{Cases: []comparatorEntry{{ID: "one", Trial: 1, Preferred: preferredLabel(mapping, variantWithSkill), Reason: "better"}}})
+	agent := &fakeHarness{judgeResponse: string(grader), compareResponse: string(compared)}
+	_, err = Run(context.Background(), suite, agent, cache.Store{Root: t.TempDir()}, Config{
+		Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"),
+		SandboxLevel: string(harness.SandboxUnsandboxed), Network: true, NoCache: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	want := []harness.SecurityPolicy{
+		{Level: harness.SandboxUnsandboxed, Network: true},
+	}
+	if !equalSecurityPolicies(agent.resolvePolicies, want) {
+		t.Fatalf("ResolveSecurity policies = %#v, want %#v", agent.resolvePolicies, want)
+	}
+	for _, request := range agent.requests {
+		if request.Security.Policy() != want[0] {
+			t.Fatalf("request security policy = %#v, want %#v", request.Security.Policy(), want[0])
+		}
+	}
+}
+
+func equalSecurityPolicies(left, right []harness.SecurityPolicy) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }

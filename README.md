@@ -153,9 +153,9 @@ Runs are sandboxed and offline by default; pass `--network` for cases that need 
 Credential handling is documented in the [credential boundary](docs/architecture.md#credential-boundary) and the `required_actions` contract in [action evidence](docs/architecture.md#action-evidence). If the agent's sandbox cannot start but the environment is already isolated (a CI runner or container), disable it explicitly — Shuhari refuses this without the acknowledgement and labels the verdict:
 
 ```sh
-SHUHARI_SANDBOX=danger-full-access \
+SHUHARI_SANDBOX=unsandboxed \
 SHUHARI_I_UNDERSTAND_NO_CREDENTIAL_BOUNDARY=1 \
-shuhari eval skill path/to/skill
+shuhari eval skill path/to/skill --network=true
 ```
 
 ## License

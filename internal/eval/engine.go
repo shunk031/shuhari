@@ -14,6 +14,7 @@ import (
 
 	"github.com/shunk031/shuhari/internal/cache"
 	"github.com/shunk031/shuhari/internal/harness"
+	contracts "github.com/shunk031/shuhari/schemas"
 )
 
 type runTask struct {
@@ -31,9 +32,32 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if config.Trials < 1 || config.Jobs < 1 || config.Timeout <= 0 {
 		return Report{}, errors.New("trials, jobs, and timeout must be positive")
 	}
-	config.Sandbox = harness.EffectiveSandbox(config.Sandbox)
-	if err := harness.ValidateSandbox(config.Sandbox); err != nil {
+	level, err := harness.EffectiveSandboxLevel(config.SandboxLevel)
+	if err != nil {
 		return Report{}, err
+	}
+	config.SandboxLevel = string(level)
+	runPolicy := harness.SecurityPolicy{Level: level, Network: config.Network}
+	runSecurity, err := agent.ResolveSecurity(ctx, runPolicy)
+	if err != nil {
+		return Report{}, err
+	}
+	if err := harness.ValidateSecurityResolution(runPolicy, runSecurity); err != nil {
+		return Report{}, fmt.Errorf("security resolution: %w", err)
+	}
+	judgePolicy := harness.SecurityPolicy{Level: harness.SandboxReadOnly, Network: false}
+	if runPolicy.Level == harness.SandboxUnsandboxed {
+		judgePolicy = runPolicy
+	}
+	judgeSecurity := runSecurity
+	if judgePolicy != runPolicy {
+		judgeSecurity, err = agent.ResolveSecurity(ctx, judgePolicy)
+		if err != nil {
+			return Report{}, fmt.Errorf("resolve judge security: %w", err)
+		}
+	}
+	if err := harness.ValidateSecurityResolution(judgePolicy, judgeSecurity); err != nil {
+		return Report{}, fmt.Errorf("judge security resolution: %w", err)
 	}
 	capabilities := agent.Capabilities()
 	if suite.Kind == harness.TargetSkill && !capabilities.Skills {
@@ -42,7 +66,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if suite.Kind == harness.TargetInstructions && !capabilities.Instructions {
 		return Report{}, errors.New("selected agent does not support instructions evaluation")
 	}
-	identity, err := agent.Probe(ctx)
+	identity, err := agent.Probe(ctx, runSecurity, judgeSecurity)
 	if err != nil {
 		return Report{}, err
 	}
@@ -59,9 +83,11 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 		RunnerDigest     string
 		Identity         harness.Identity
 		Config           Config
+		RunSecurity      harness.SecurityResolution
+		JudgeSecurity    harness.SecurityResolution
 		GraderDigest     string
 		ComparatorDigest string
-	}{Digest: digest, RunnerDigest: runnerDigest, Identity: identity, Config: config, GraderDigest: promptDigest(graderPrompt), ComparatorDigest: promptDigest(comparatorPrompt)})
+	}{Digest: digest, RunnerDigest: runnerDigest, Identity: identity, Config: config, RunSecurity: runSecurity, JudgeSecurity: judgeSecurity, GraderDigest: promptDigest(graderPrompt), ComparatorDigest: promptDigest(comparatorPrompt)})
 	key := cache.Key(cacheOptions)
 	if !config.NoCache {
 		if record, ok, err := store.GetSuccess(key); err != nil {
@@ -74,7 +100,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if err != nil {
 		return Report{}, err
 	}
-	if err := writeManifest(iteration, suite, digest, runnerDigest, identity, config); err != nil {
+	if err := writeManifest(iteration, suite, digest, runnerDigest, identity, config, runSecurity, judgeSecurity); err != nil {
 		return Report{Workspace: iteration}, err
 	}
 	withVariant, withoutVariant := variantsFor(suite.Kind)
@@ -84,27 +110,33 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 			tasks = append(tasks, runTask{Case: item, Trial: trial, Variant: withVariant}, runTask{Case: item, Trial: trial, Variant: withoutVariant})
 		}
 	}
-	results, err := executeTasks(ctx, suite, agent, config, iteration, tasks)
+	results, err := executeTasks(ctx, suite, agent, config, runSecurity, iteration, tasks)
 	if err != nil {
 		_ = writeJSON(filepath.Join(iteration, "evidence.json"), struct {
 			SchemaVersion string `json:"schema_version"`
 			Stage         string `json:"stage"`
 			Error         string `json:"error"`
-		}{SchemaVersion: workspaceSchemaVersion, Stage: "execution", Error: err.Error()})
+		}{SchemaVersion: evidenceSchemaVersion, Stage: "execution", Error: err.Error()})
 		return Report{Workspace: iteration}, err
 	}
-	graded, candidateWins, baselineWins, reasons, judgeOutput, err := gradeRuns(ctx, agent, suite, results, config, iteration)
+	graded, candidateWins, baselineWins, reasons, judgeOutput, err := gradeRuns(ctx, agent, suite, results, config, judgeSecurity, iteration)
 	if err != nil {
 		_ = writeJSON(filepath.Join(iteration, "evidence.json"), struct {
 			SchemaVersion string `json:"schema_version"`
 			Stage         string `json:"stage"`
 			Error         string `json:"error"`
 			JudgeOutput   string `json:"judge_output,omitempty"`
-		}{SchemaVersion: workspaceSchemaVersion, Stage: "grading", Error: err.Error(), JudgeOutput: judgeOutput})
+		}{SchemaVersion: evidenceSchemaVersion, Stage: "grading", Error: err.Error(), JudgeOutput: judgeOutput})
 		return Report{Workspace: iteration}, err
 	}
 	benchmark := buildBenchmark(graded)
-	benchmark.Security = harness.ExecutionSecurityForSandbox(config.Sandbox)
+	benchmark.Security = runSecurity
+	if err := harness.ValidateSecurityResolution(runPolicy, benchmark.Security); err != nil {
+		return Report{Workspace: iteration}, fmt.Errorf("validate benchmark security: %w", err)
+	}
+	if err := contracts.Validate("benchmark", benchmark); err != nil {
+		return Report{Workspace: iteration}, err
+	}
 	if err := writeJSON(filepath.Join(iteration, "benchmark.json"), benchmark); err != nil {
 		return Report{Workspace: iteration}, err
 	}
@@ -147,7 +179,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 			CandidateWins int      `json:"candidate_wins"`
 			BaselineWins  int      `json:"baseline_wins"`
 			JudgeOutput   string   `json:"judge_output"`
-		}{SchemaVersion: workspaceSchemaVersion, Reasons: reasons, CandidateWins: candidateWins, BaselineWins: baselineWins, JudgeOutput: judgeOutput}
+		}{SchemaVersion: evidenceSchemaVersion, Reasons: reasons, CandidateWins: candidateWins, BaselineWins: baselineWins, JudgeOutput: judgeOutput}
 		if err := writeJSON(filepath.Join(iteration, "evidence.json"), evidence); err != nil {
 			return report, err
 		}
@@ -173,22 +205,32 @@ func allTrialsPass(values []bool) bool {
 	return true
 }
 
-func writeManifest(iteration string, suite Suite, suiteDigest, runnerDigest string, identity harness.Identity, config Config) error {
-	return writeJSON(filepath.Join(iteration, "manifest.json"), struct {
-		SchemaVersion    string             `json:"schema_version"`
-		CreatedAt        time.Time          `json:"created_at"`
-		TargetKind       harness.TargetKind `json:"target_kind"`
-		TargetName       string             `json:"target_name"`
-		SuiteDigest      string             `json:"suite_digest"`
-		RunnerDigest     string             `json:"runner_digest"`
-		AgentIdentity    harness.Identity   `json:"agent_identity"`
-		Config           Config             `json:"config"`
-		GraderDigest     string             `json:"grader_prompt_digest"`
-		ComparatorDigest string             `json:"comparator_prompt_digest"`
-	}{SchemaVersion: workspaceSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: suite.Kind, TargetName: suite.Name, SuiteDigest: suiteDigest, RunnerDigest: runnerDigest, AgentIdentity: identity, Config: config, GraderDigest: promptDigest(graderPrompt), ComparatorDigest: promptDigest(comparatorPrompt)})
+func writeManifest(iteration string, suite Suite, suiteDigest, runnerDigest string, identity harness.Identity, config Config, security, judgeSecurity harness.SecurityResolution) error {
+	policy := harness.SecurityPolicy{Level: harness.SandboxLevel(config.SandboxLevel), Network: config.Network}
+	if err := harness.ValidateSecurityResolution(policy, security); err != nil {
+		return fmt.Errorf("validate manifest security: %w", err)
+	}
+	manifest := struct {
+		SchemaVersion    string                     `json:"schema_version"`
+		CreatedAt        time.Time                  `json:"created_at"`
+		TargetKind       harness.TargetKind         `json:"target_kind"`
+		TargetName       string                     `json:"target_name"`
+		SuiteDigest      string                     `json:"suite_digest"`
+		RunnerDigest     string                     `json:"runner_digest"`
+		AgentIdentity    harness.Identity           `json:"agent_identity"`
+		Config           Config                     `json:"config"`
+		Security         harness.SecurityResolution `json:"security"`
+		JudgeSecurity    harness.SecurityResolution `json:"judge_security"`
+		GraderDigest     string                     `json:"grader_prompt_digest"`
+		ComparatorDigest string                     `json:"comparator_prompt_digest"`
+	}{SchemaVersion: workspaceManifestSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: suite.Kind, TargetName: suite.Name, SuiteDigest: suiteDigest, RunnerDigest: runnerDigest, AgentIdentity: identity, Config: config, Security: security, JudgeSecurity: judgeSecurity, GraderDigest: promptDigest(graderPrompt), ComparatorDigest: promptDigest(comparatorPrompt)}
+	if err := contracts.Validate("workspace", manifest); err != nil {
+		return err
+	}
+	return writeJSON(filepath.Join(iteration, "manifest.json"), manifest)
 }
 
-func executeTasks(ctx context.Context, suite Suite, agent harness.Harness, config Config, iteration string, tasks []runTask) ([]runResult, error) {
+func executeTasks(ctx context.Context, suite Suite, agent harness.Harness, config Config, security harness.SecurityResolution, iteration string, tasks []runTask) ([]runResult, error) {
 	queue := make(chan runTask, len(tasks))
 	outcomes := make(chan runOutcome, len(tasks))
 	for _, task := range tasks {
@@ -205,7 +247,7 @@ func executeTasks(ctx context.Context, suite Suite, agent harness.Harness, confi
 		go func() {
 			defer group.Done()
 			for task := range queue {
-				result, err := executeTask(ctx, suite, agent, config, iteration, task)
+				result, err := executeTask(ctx, suite, agent, config, security, iteration, task)
 				outcomes <- runOutcome{Result: result, Err: err}
 			}
 		}()
@@ -237,7 +279,7 @@ func executeTasks(ctx context.Context, suite Suite, agent harness.Harness, confi
 	return results, nil
 }
 
-func executeTask(ctx context.Context, suite Suite, agent harness.Harness, config Config, iteration string, task runTask) (runResult, error) {
+func executeTask(ctx context.Context, suite Suite, agent harness.Harness, config Config, security harness.SecurityResolution, iteration string, task runTask) (runResult, error) {
 	runDir := runDirectory(iteration, task.Case.ID, task.Variant, task.Trial)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return runResult{}, fmt.Errorf("create run directory: %w", err)
@@ -261,7 +303,7 @@ func executeTask(ctx context.Context, suite Suite, agent harness.Harness, config
 		target = &harness.Target{Kind: suite.Kind, Name: suite.Name, SourcePath: suite.TargetPath}
 	}
 	prompt := buildRunPrompt(task.Case, files, outputDir, target)
-	result, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: prompt, Target: target, Model: config.Model, ReasoningEffort: config.ReasoningEffort, Sandbox: config.Sandbox, Network: config.Network, Timeout: config.Timeout})
+	result, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: prompt, Target: target, Model: config.Model, ReasoningEffort: config.ReasoningEffort, Security: security, Timeout: config.Timeout})
 	if err != nil {
 		runErr := fmt.Errorf("%s trial %d %s: %w", task.Case.ID, task.Trial, task.Variant, err)
 		if attempts := harness.AttemptsFromError(err); attempts.AttemptCount > 0 {

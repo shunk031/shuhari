@@ -43,6 +43,9 @@ func newEvalSkillCommand(options Options) *cobra.Command {
 		Short: "Evaluate an Agent Skill with and without the skill",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			if err := resolveSecurityFlags(command, &flags.sandbox, flags.network); err != nil {
+				return err
+			}
 			paths, err := resolveSkillPaths(args)
 			if err != nil {
 				return err
@@ -102,6 +105,9 @@ func newEvalInstructionsCommand(options Options) *cobra.Command {
 		Short: "Evaluate repository instructions with and without the instructions",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			if err := resolveSecurityFlags(command, &flags.sandbox, flags.network); err != nil {
+				return err
+			}
 			suite, err := eval.LoadInstructionsSuite(args[0], evalPath)
 			if err != nil {
 				return err
@@ -137,7 +143,7 @@ func addEvalFlags(command *cobra.Command, flags *evalFlags) {
 	command.Flags().StringVar(&flags.reasoningEffort, "reasoning-effort", "", "reasoning effort used for evaluated runs")
 	command.Flags().StringVar(&flags.judgeModel, "judge-model", "", "model used for grading (defaults to --model)")
 	command.Flags().StringVar(&flags.judgeReasoningEffort, "judge-reasoning-effort", "", "reasoning effort used for grading")
-	command.Flags().StringVar(&flags.sandbox, "sandbox", "workspace-write", "agent sandbox mode")
+	command.Flags().StringVar(&flags.sandbox, "sandbox", "isolated", "Shuhari sandbox level: isolated, read-only, or unsandboxed")
 	command.Flags().BoolVar(&flags.network, "network", false, "allow network access during evaluated runs")
 	command.Flags().StringVar(&flags.workspace, "workspace", "", "workspace root (defaults beside the target)")
 	command.Flags().IntVar(&flags.trials, "trials", 1, "trials per case and configuration")
@@ -149,7 +155,7 @@ func addEvalFlags(command *cobra.Command, flags *evalFlags) {
 }
 
 func (flags evalFlags) config() eval.Config {
-	return eval.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, JudgeModel: flags.judgeModel, JudgeReasoningEffort: flags.judgeReasoningEffort, Sandbox: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict, NoCache: flags.noCache}
+	return eval.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, JudgeModel: flags.judgeModel, JudgeReasoningEffort: flags.judgeReasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict, NoCache: flags.noCache}
 }
 
 func resolveSkillPaths(arguments []string) ([]string, error) {

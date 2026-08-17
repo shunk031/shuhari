@@ -40,6 +40,7 @@ func TestExecuteTaskCollectsProductionShapeSymlink(t *testing.T) {
 		Suite{Kind: harness.TargetSkill, Name: "demo"},
 		&symlinkOutputHarness{},
 		Config{Timeout: time.Second},
+		fakeSecurityResolution(harness.SecurityPolicy{Level: harness.SandboxIsolated}),
 		iteration,
 		runTask{Case: Case{ID: "case-symlink", Prompt: "inspect dotfiles"}, Trial: 2, Variant: variantWithoutSkill},
 	)

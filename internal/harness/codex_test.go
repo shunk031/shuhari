@@ -299,13 +299,13 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "must-not-leak")
 
 	agent := newCodex(Config{Executable: script})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated, Network: true})
 	result, err := agent.Run(context.Background(), Request{
 		WorkDir:         t.TempDir(),
 		Prompt:          "test",
 		Model:           "model-a",
 		ReasoningEffort: "high",
-		Sandbox:         "workspace-write",
-		Network:         true,
+		Security:        security,
 		Timeout:         time.Second,
 		OutputSchema:    []byte(`{"type":"object"}`),
 	})
@@ -388,7 +388,8 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 		t.Fatal(err)
 	}
 	agent := newCodex(Config{Executable: script})
-	result, err := agent.Run(context.Background(), Request{WorkDir: workDir, Prompt: "test", Timeout: time.Second})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+	result, err := agent.Run(context.Background(), Request{WorkDir: workDir, Prompt: "test", Security: security, Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,11 +413,11 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_token
 	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(DangerFullAccessAcknowledgementEnv, "")
+	t.Setenv(NoCredentialBoundaryAcknowledgementEnv, "")
 	agent := newCodex(Config{Executable: script})
-	_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "read auth material", Sandbox: "danger-full-access", Timeout: time.Second})
-	if err == nil || !strings.Contains(err.Error(), DangerFullAccessAcknowledgementEnv) {
-		t.Fatalf("danger-full-access was not refused with an actionable error: %v", err)
+	_, err := agent.ResolveSecurity(context.Background(), SecurityPolicy{Level: SandboxUnsandboxed, Network: true})
+	if err == nil || !strings.Contains(err.Error(), NoCredentialBoundaryAcknowledgementEnv) {
+		t.Fatalf("unsandboxed was not refused with an actionable error: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(capture, "invoked")); !os.IsNotExist(statErr) {
 		t.Fatalf("Codex process ran credential-reading child before refusal: %v", statErr)
@@ -443,9 +444,10 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_token
 		t.Fatal(err)
 	}
 	t.Setenv("CODEX_HOME", sourceHome)
-	t.Setenv(DangerFullAccessAcknowledgementEnv, "1")
+	t.Setenv(NoCredentialBoundaryAcknowledgementEnv, "1")
 	agent := newCodex(Config{Executable: script})
-	if _, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "read auth material", Sandbox: "danger-full-access", Timeout: time.Second}); err != nil {
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxUnsandboxed, Network: true})
+	if _, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "read auth material", Security: security, Timeout: time.Second}); err != nil {
 		t.Fatal(err)
 	}
 	leaked, err := os.ReadFile(filepath.Join(capture, "leaked"))
@@ -455,7 +457,6 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_token
 	if string(leaked) != "test-auth-material" {
 		t.Fatalf("credential probe did not reproduce danger-mode reachability: %q", leaked)
 	}
-	security := ExecutionSecurityForSandbox("danger-full-access")
 	if security.CredentialBoundary != CredentialBoundaryNone {
 		t.Fatalf("reachable credential mode was not labeled as no boundary: %#v", security)
 	}
@@ -488,10 +489,11 @@ func TestSecureTemporaryDirectoryIsRandomAndPrivate(t *testing.T) {
 }
 
 func TestWriteCodexProfileDangerFullAccessOnlyHardensCommandEnvironment(t *testing.T) {
-	t.Parallel()
-
 	codexHome := t.TempDir()
-	request := Request{WorkDir: t.TempDir(), Sandbox: "danger-full-access"}
+	t.Setenv(NoCredentialBoundaryAcknowledgementEnv, "1")
+	agent := newCodex(Config{})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxUnsandboxed, Network: true})
+	request := Request{WorkDir: t.TempDir(), Security: security}
 	if err := writeCodexProfile(codexHome, request); err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +550,8 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_token
 	}
 	agent := newCodex(Config{Executable: script})
 	agent.waitBeforeRetry = noRetryWait
-	result, err := agent.Run(context.Background(), Request{WorkDir: workDir, Prompt: "test", Timeout: time.Second})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+	result, err := agent.Run(context.Background(), Request{WorkDir: workDir, Prompt: "test", Security: security, Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -583,7 +586,8 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_token
 	}
 	agent := newCodex(Config{Executable: script})
 	agent.waitBeforeRetry = noRetryWait
-	result, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Timeout: time.Second})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+	result, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Security: security, Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -619,12 +623,13 @@ exit 2
 		t.Fatal(err)
 	}
 	agent := newCodex(Config{Executable: script})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
 	var retries []int
 	agent.waitBeforeRetry = func(_ context.Context, retry int) error {
 		retries = append(retries, retry)
 		return nil
 	}
-	_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Timeout: time.Second})
+	_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Security: security, Timeout: time.Second})
 	if err == nil || !errors.Is(err, ErrTransient) {
 		t.Fatalf("Run() error = %v, want exhausted transient error", err)
 	}
@@ -664,7 +669,8 @@ exit 2
 	}
 	agent := newCodex(Config{Executable: script})
 	agent.waitBeforeRetry = noRetryWait
-	_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Timeout: time.Second})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+	_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Security: security, Timeout: time.Second})
 	if err == nil {
 		t.Fatal("Run() accepted a nonzero completed command")
 	}
@@ -747,7 +753,8 @@ printf '%%s\n' "$count" > "$count_file"
 			}
 			agent := newCodex(Config{Executable: script})
 			agent.waitBeforeRetry = noRetryWait
-			result, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Timeout: time.Second})
+			security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+			result, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Security: security, Timeout: time.Second})
 			if test.wantError && err == nil {
 				t.Fatal("Run() succeeded, want error")
 			}
@@ -788,8 +795,6 @@ printf '%%s\n' "$count" > "$count_file"
 func noRetryWait(context.Context, int) error { return nil }
 
 func TestCodexDoesNotRetryInputTooLarge(t *testing.T) {
-	t.Parallel()
-
 	capture := t.TempDir()
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	contents := fmt.Sprintf(`#!/bin/sh
@@ -805,7 +810,9 @@ exit 1
 		t.Fatal(err)
 	}
 	agent := newCodex(Config{Executable: script})
-	_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "oversized", Timeout: time.Second})
+	t.Setenv(NoCredentialBoundaryAcknowledgementEnv, "1")
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxUnsandboxed, Network: true})
+	_, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "oversized", Security: security, Timeout: time.Second})
 	if err == nil {
 		t.Fatal("Run() accepted input_too_large")
 	}
@@ -821,9 +828,49 @@ exit 1
 	}
 }
 
-func TestEffectiveSandboxResolvesEnvironmentOverride(t *testing.T) {
-	t.Setenv("SHUHARI_SANDBOX", "danger-full-access")
-	if got := EffectiveSandbox("workspace-write"); got != "danger-full-access" {
-		t.Fatalf("EffectiveSandbox() = %q", got)
+func TestEffectiveSandboxLevelDoesNotReadEnvironment(t *testing.T) {
+	t.Setenv("SHUHARI_SANDBOX", "read-only")
+	got, err := EffectiveSandboxLevel("isolated")
+	if err != nil || got != SandboxIsolated {
+		t.Fatalf("EffectiveSandboxLevel() = %q, %v", got, err)
 	}
+}
+
+func TestCodexProbeRejectsUnavailableProtectedSandbox(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "codex")
+	contents := `#!/bin/sh
+if test "$1" = "--version"; then
+  printf '%s\n' 'codex-cli test'
+  exit 0
+fi
+printf '%s\n' 'failed to create user namespace' >&2
+exit 1
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	codexHome := filepath.Join(root, "codex-home")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	agent := newCodex(Config{Executable: script})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+	_, err := agent.Probe(context.Background(), security)
+	if err == nil || !errors.Is(err, ErrUnsupportedSecurityPolicy) {
+		t.Fatalf("Probe() error = %v, want ErrUnsupportedSecurityPolicy", err)
+	}
+	if !strings.Contains(err.Error(), "unsandboxed") || !strings.Contains(err.Error(), "isolated runner") {
+		t.Fatalf("Probe() error is not actionable: %v", err)
+	}
+}
+
+func mustResolveCodexSecurity(t *testing.T, agent *codexHarness, policy SecurityPolicy) SecurityResolution {
+	t.Helper()
+	resolution, err := agent.ResolveSecurity(context.Background(), policy)
+	if err != nil {
+		t.Fatalf("ResolveSecurity() error = %v", err)
+	}
+	return resolution
 }

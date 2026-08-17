@@ -25,6 +25,10 @@ type recordingJudgeHarness struct {
 	transportAttempts  harness.AttemptEvidence
 }
 
+func testJudgeSecurity() harness.SecurityResolution {
+	return fakeSecurityResolution(harness.SecurityPolicy{Level: harness.SandboxReadOnly})
+}
+
 func (h *recordingJudgeHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
 	h.mu.Lock()
 	h.runs++
@@ -103,7 +107,7 @@ func TestGradeRunsPersistsJudgeTransportRetryEvidence(t *testing.T) {
 	suite, results := oneTrialJudgeSuite(t)
 	iteration := t.TempDir()
 	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "response body decode error"}}}
-	_, _, _, _, _, err := gradeRuns(context.Background(), &recordingJudgeHarness{transportAttempts: attempts}, suite, results, Config{Trials: 1, Timeout: time.Second}, iteration)
+	_, _, _, _, _, err := gradeRuns(context.Background(), &recordingJudgeHarness{transportAttempts: attempts}, suite, results, Config{Trials: 1, Timeout: time.Second}, testJudgeSecurity(), iteration)
 	if err != nil {
 		t.Fatalf("gradeRuns() error = %v", err)
 	}
@@ -133,7 +137,7 @@ func TestGradeRunsPersistsExhaustedJudgeTransportAttempts(t *testing.T) {
 
 	suite, results := oneTrialJudgeSuite(t)
 	iteration := t.TempDir()
-	_, _, _, _, _, err := gradeRuns(context.Background(), &exhaustedJudgeTransportHarness{}, suite, results, Config{Trials: 1, Timeout: time.Second}, iteration)
+	_, _, _, _, _, err := gradeRuns(context.Background(), &exhaustedJudgeTransportHarness{}, suite, results, Config{Trials: 1, Timeout: time.Second}, testJudgeSecurity(), iteration)
 	if err == nil || !errors.Is(err, harness.ErrTransient) {
 		t.Fatalf("gradeRuns() error = %v, want exhausted transport error", err)
 	}
@@ -172,7 +176,7 @@ func TestGradeRunsAllowsMinorityBaselinePreference(t *testing.T) {
 		"two":   variantWithSkill,
 		"three": variantWithoutSkill,
 	}}
-	_, candidateWins, baselineWins, reasons, _, err := gradeRuns(context.Background(), agent, Suite{Kind: harness.TargetSkill, Cases: cases}, results, Config{Trials: 1, Timeout: time.Second}, root)
+	_, candidateWins, baselineWins, reasons, _, err := gradeRuns(context.Background(), agent, Suite{Kind: harness.TargetSkill, Cases: cases}, results, Config{Trials: 1, Timeout: time.Second}, testJudgeSecurity(), root)
 	if err != nil {
 		t.Fatalf("gradeRuns() error = %v", err)
 	}
@@ -585,7 +589,7 @@ func TestGradeRunsHandlesCaseWhoseTrialsOnlyFitIndividually(t *testing.T) {
 	}
 
 	agent := &recordingJudgeHarness{rejectOverBytes: codexInputLimit}
-	graded, _, _, _, _, err := gradeRuns(context.Background(), agent, Suite{Kind: harness.TargetSkill, Cases: []Case{item}}, results, Config{Trials: 2, Timeout: time.Second}, root)
+	graded, _, _, _, _, err := gradeRuns(context.Background(), agent, Suite{Kind: harness.TargetSkill, Cases: []Case{item}}, results, Config{Trials: 2, Timeout: time.Second}, testJudgeSecurity(), root)
 	if err != nil {
 		t.Fatalf("gradeRuns() error = %v", err)
 	}
@@ -599,7 +603,7 @@ func TestGradeRunsJudgesEachTrialSeparately(t *testing.T) {
 
 	suite, results := judgeSuite(t, 2)
 	agent := &recordingJudgeHarness{}
-	graded, _, _, _, _, err := gradeRuns(context.Background(), agent, suite, results, Config{Trials: 2, Timeout: time.Second}, t.TempDir())
+	graded, _, _, _, _, err := gradeRuns(context.Background(), agent, suite, results, Config{Trials: 2, Timeout: time.Second}, testJudgeSecurity(), t.TempDir())
 	if err != nil {
 		t.Fatalf("gradeRuns() error = %v", err)
 	}
@@ -670,7 +674,7 @@ func TestGradeRunsRejectsIncompletePerTrialOutput(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			suite, results := judgeSuite(t, 2)
-			_, _, _, _, _, err := gradeRuns(context.Background(), test.agent, suite, results, Config{Trials: 2, Timeout: time.Second}, t.TempDir())
+			_, _, _, _, _, err := gradeRuns(context.Background(), test.agent, suite, results, Config{Trials: 2, Timeout: time.Second}, testJudgeSecurity(), t.TempDir())
 			if err == nil || !strings.Contains(err.Error(), test.stage) {
 				t.Fatalf("gradeRuns() error = %v, want incomplete %s", err, test.stage)
 			}
@@ -690,7 +694,7 @@ func TestGradeRunsReportsOversizedTrialPrompt(t *testing.T) {
 		}
 		results = append(results, runResult{Case: item, Trial: 1, Variant: variant, RunDir: runDir, Artifact: strings.Repeat(variant, 1_000)})
 	}
-	_, _, _, _, _, err := gradeRuns(context.Background(), &recordingJudgeHarness{rejectOverBytes: 1_000}, Suite{Kind: harness.TargetSkill, Cases: []Case{item}}, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir())
+	_, _, _, _, _, err := gradeRuns(context.Background(), &recordingJudgeHarness{rejectOverBytes: 1_000}, Suite{Kind: harness.TargetSkill, Cases: []Case{item}}, results, Config{Trials: 1, Timeout: time.Second}, testJudgeSecurity(), t.TempDir())
 	if err == nil {
 		t.Fatal("gradeRuns() accepted an oversized case prompt")
 	}
@@ -713,7 +717,7 @@ func TestGradeRunsRetriesInvalidJudgeResponseOnce(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			suite, results := oneTrialJudgeSuite(t)
-			graded, _, _, _, _, err := gradeRuns(context.Background(), test.agent, suite, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir())
+			graded, _, _, _, _, err := gradeRuns(context.Background(), test.agent, suite, results, Config{Trials: 1, Timeout: time.Second}, testJudgeSecurity(), t.TempDir())
 			if err != nil {
 				t.Fatalf("gradeRuns() error = %v", err)
 			}
@@ -740,7 +744,7 @@ func TestGradeRunsAbortsAfterSecondInvalidJudgeResponse(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			suite, results := oneTrialJudgeSuite(t)
-			_, _, _, _, _, err := gradeRuns(context.Background(), test.agent, suite, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir())
+			_, _, _, _, _, err := gradeRuns(context.Background(), test.agent, suite, results, Config{Trials: 1, Timeout: time.Second}, testJudgeSecurity(), t.TempDir())
 			if err == nil || !strings.Contains(err.Error(), test.stage) {
 				t.Fatalf("gradeRuns() error = %v, want %s validation error", err, test.stage)
 			}
@@ -760,7 +764,7 @@ func TestGradingErrorRetainsAllValidationRetryResponses(t *testing.T) {
 
 	suite, results := oneTrialJudgeSuite(t)
 	iteration := t.TempDir()
-	_, _, _, _, _, err := gradeRuns(context.Background(), &recordingJudgeHarness{invalidGraders: 2}, suite, results, Config{Trials: 1, Timeout: time.Second}, iteration)
+	_, _, _, _, _, err := gradeRuns(context.Background(), &recordingJudgeHarness{invalidGraders: 2}, suite, results, Config{Trials: 1, Timeout: time.Second}, testJudgeSecurity(), iteration)
 	if err == nil {
 		t.Fatal("gradeRuns() accepted two invalid grader responses")
 	}
@@ -789,7 +793,7 @@ func TestJudgeValidationRetryPromptContainsOnlyContractError(t *testing.T) {
 
 	suite, results := oneTrialJudgeSuite(t)
 	agent := &recordingJudgeHarness{invalidGraders: 1}
-	if _, _, _, _, _, err := gradeRuns(context.Background(), agent, suite, results, Config{Trials: 1, Timeout: time.Second}, t.TempDir()); err != nil {
+	if _, _, _, _, _, err := gradeRuns(context.Background(), agent, suite, results, Config{Trials: 1, Timeout: time.Second}, testJudgeSecurity(), t.TempDir()); err != nil {
 		t.Fatalf("gradeRuns() error = %v", err)
 	}
 	retryPrompt := agent.requests[1].Prompt

@@ -31,20 +31,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes bubblewrap
           npm install --global @openai/codex@0.146.0
-      - name: Test Codex credential protections
+      - name: Test Codex adapter conformance
         run: |
           sudo env \
             PATH="$PATH" \
             SHUHARI_REQUIRE_CODEX_SANDBOX_TEST=1 \
-            "$(command -v go)" test -race -tags=codex_sandbox -run '^TestCodex(DefaultSandboxDeniesChildCredentialReads|CommandEnvironmentStripsGitHubCredentials)$' -v ./internal/harness
+            "$(command -v go)" test -race -tags=codex_sandbox -run '^TestCodex(ProtectedSandboxConformance|CommandEnvironmentStripsGitHubCredentials)$' -v ./internal/harness
       - name: Prove credential-deny mutation is detected
         run: |
           if sudo env \
             PATH="$PATH" \
             SHUHARI_REQUIRE_CODEX_SANDBOX_TEST=1 \
             SHUHARI_TEST_REMOVE_CREDENTIAL_DENIES=1 \
-            "$(command -v go)" test -race -tags=codex_sandbox -run '^TestCodexDefaultSandboxDeniesChildCredentialReads$' -v ./internal/harness; then
+            "$(command -v go)" test -race -tags=codex_sandbox -run '^TestCodexProtectedSandboxConformance$' -v ./internal/harness; then
             echo "credential-deny mutation unexpectedly passed"
+            exit 1
+          fi
+      - name: Prove filesystem-policy mutation is detected
+        run: |
+          if sudo env \
+            PATH="$PATH" \
+            SHUHARI_REQUIRE_CODEX_SANDBOX_TEST=1 \
+            SHUHARI_TEST_WEAKEN_FILESYSTEM=1 \
+            "$(command -v go)" test -race -tags=codex_sandbox -run '^TestCodexProtectedSandboxConformance$' -v ./internal/harness; then
+            echo "filesystem-policy mutation unexpectedly passed"
+            exit 1
+          fi
+      - name: Prove network-policy mutation is detected
+        run: |
+          if sudo env \
+            PATH="$PATH" \
+            SHUHARI_REQUIRE_CODEX_SANDBOX_TEST=1 \
+            SHUHARI_TEST_FORCE_NETWORK_ENABLED=1 \
+            "$(command -v go)" test -race -tags=codex_sandbox -run '^TestCodexProtectedSandboxConformance$' -v ./internal/harness; then
+            echo "network-policy mutation unexpectedly passed"
             exit 1
           fi
       - name: Vet

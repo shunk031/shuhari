@@ -51,7 +51,7 @@ func DefaultStore() (Store, error) {
 	if err != nil {
 		return Store{}, fmt.Errorf("find user cache directory: %w", err)
 	}
-	return Store{Root: filepath.Join(root, "shuhari", "v1")}, nil
+	return Store{Root: filepath.Join(root, "shuhari", "v2")}, nil
 }
 
 func Key(parts ...[]byte) string {

@@ -102,7 +102,7 @@ type trialJudgeInputs struct {
 	Comparator comparatorInput
 }
 
-func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results []runResult, config Config, iteration string) ([]gradedRun, int, int, []string, string, error) {
+func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results []runResult, config Config, judgeSecurity harness.SecurityResolution, iteration string) ([]gradedRun, int, int, []string, string, error) {
 	byKey := map[string]runResult{}
 	for _, result := range results {
 		byKey[runKey(result.Case.ID, result.Trial, result.Variant)] = result
@@ -131,7 +131,7 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 		}
 	}
 
-	graderEntries, graderResponse, judgeRetries, err := runGradersPerTrial(ctx, agent, trialInputs, config)
+	graderEntries, graderResponse, judgeRetries, err := runGradersPerTrial(ctx, agent, trialInputs, config, judgeSecurity)
 	if err != nil {
 		if writeErr := persistJudgeRetries(iteration, judgeRetries); writeErr != nil {
 			return nil, 0, 0, nil, graderResponse, writeErr
@@ -140,7 +140,7 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 		return nil, 0, 0, nil, graderResponse, err
 	}
 
-	comparatorEntries, comparatorResponse, comparatorRetries, err := runComparatorsPerTrial(ctx, agent, trialInputs, config)
+	comparatorEntries, comparatorResponse, comparatorRetries, err := runComparatorsPerTrial(ctx, agent, trialInputs, config, judgeSecurity)
 	judgeRetries = append(judgeRetries, comparatorRetries...)
 	rawEvidence, _ := json.Marshal(rawJudgeEvidence{Grader: graderResponse, Comparator: comparatorResponse})
 	if err != nil {
@@ -182,7 +182,7 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 			} else if comparisonEntry.Preferred == "B" {
 				winner = mapping.B
 			}
-			comparison := Comparison{SchemaVersion: workspaceSchemaVersion, ID: item.ID, Trial: trial, A: mapping.A, B: mapping.B, Preferred: comparisonEntry.Preferred, PreferredVariant: winner, Reason: comparisonEntry.Reason}
+			comparison := Comparison{SchemaVersion: comparisonSchemaVersion, ID: item.ID, Trial: trial, A: mapping.A, B: mapping.B, Preferred: comparisonEntry.Preferred, PreferredVariant: winner, Reason: comparisonEntry.Reason}
 			path := comparisonPath(iteration, item.ID, trial)
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return nil, 0, 0, nil, string(rawEvidence), fmt.Errorf("create comparison directory: %w", err)
@@ -210,7 +210,7 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 	return graded, candidateWins, baselineWins, nil, string(rawEvidence), nil
 }
 
-func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config) (map[string]judgeEntry, string, []judgeTransportRetry, error) {
+func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config, security harness.SecurityResolution) (map[string]judgeEntry, string, []judgeTransportRetry, error) {
 	merged := judgeOutput{}
 	entries := map[string]judgeEntry{}
 	var retries []judgeTransportRetry
@@ -218,7 +218,7 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 		graderInputs := []judgeInput{item.Grader}
 		var output judgeOutput
 		var trialEntries map[string]judgeEntry
-		response, attempts, err := runValidatedStructuredJudge(ctx, agent, graderPrompt, graderInputs, graderSchema(), config, func(response string) error {
+		response, attempts, err := runValidatedStructuredJudge(ctx, agent, graderPrompt, graderInputs, graderSchema(), config, security, func(response string) error {
 			output = judgeOutput{}
 			if err := json.Unmarshal([]byte(response), &output); err != nil {
 				return fmt.Errorf("decode response: %w", err)
@@ -253,7 +253,7 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 	return entries, string(encoded), retries, nil
 }
 
-func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config) (map[string]comparatorEntry, string, []judgeTransportRetry, error) {
+func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config, security harness.SecurityResolution) (map[string]comparatorEntry, string, []judgeTransportRetry, error) {
 	merged := comparatorOutput{}
 	entries := map[string]comparatorEntry{}
 	var retries []judgeTransportRetry
@@ -261,7 +261,7 @@ func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs [
 		comparatorInputs := []comparatorInput{item.Comparator}
 		var output comparatorOutput
 		var trialEntries map[string]comparatorEntry
-		response, attempts, err := runValidatedStructuredJudge(ctx, agent, comparatorPrompt, comparatorInputs, comparatorSchema(), config, func(response string) error {
+		response, attempts, err := runValidatedStructuredJudge(ctx, agent, comparatorPrompt, comparatorInputs, comparatorSchema(), config, security, func(response string) error {
 			output = comparatorOutput{}
 			if err := json.Unmarshal([]byte(response), &output); err != nil {
 				return fmt.Errorf("decode response: %w", err)
@@ -286,7 +286,7 @@ func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs [
 	return entries, string(encoded), retries, nil
 }
 
-func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, validate func(string) error) (string, []judgeCallAttempts, error) {
+func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, security harness.SecurityResolution, validate func(string) error) (string, []judgeCallAttempts, error) {
 	var response string
 	responses := make([]string, 0, 2)
 	var callAttempts []judgeCallAttempts
@@ -298,7 +298,7 @@ func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, ins
 		}
 		var err error
 		var attempts harness.AttemptEvidence
-		response, attempts, err = runStructuredJudge(ctx, agent, attemptInstructions, input, schema, config)
+		response, attempts, err = runStructuredJudge(ctx, agent, attemptInstructions, input, schema, config, security)
 		if attempts.AttemptCount > 1 || len(attempts.AttemptErrors) > 0 {
 			callAttempts = append(callAttempts, judgeCallAttempts{ValidationAttempt: attempt + 1, AttemptEvidence: attempts})
 		}
@@ -317,7 +317,7 @@ func runValidatedStructuredJudge(ctx context.Context, agent harness.Harness, ins
 	return response, callAttempts, &judgeRetryError{cause: validationErr, responses: responses}
 }
 
-func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config) (string, harness.AttemptEvidence, error) {
+func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, security harness.SecurityResolution) (string, harness.AttemptEvidence, error) {
 	prompt, err := structuredJudgePrompt(instructions, input)
 	if err != nil {
 		return "", harness.AttemptEvidence{}, err
@@ -335,7 +335,7 @@ func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions
 	if effort == "" {
 		effort = config.ReasoningEffort
 	}
-	judged, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: prompt, Model: model, ReasoningEffort: effort, Sandbox: "read-only", Timeout: config.Timeout, OutputSchema: schema})
+	judged, err := agent.Run(ctx, harness.Request{WorkDir: workDir, Prompt: prompt, Model: model, ReasoningEffort: effort, Security: security, Timeout: config.Timeout, OutputSchema: schema})
 	if err != nil {
 		return judged.Response, harness.AttemptsFromError(err), fmt.Errorf("run judge; prompt is %d bytes: %w", len(prompt), err)
 	}
@@ -357,7 +357,7 @@ func persistJudgeRetries(iteration string, retries []judgeTransportRetry) error 
 	return writeJSON(filepath.Join(iteration, "judge-retries.json"), struct {
 		SchemaVersion string                `json:"schema_version"`
 		Retries       []judgeTransportRetry `json:"retries"`
-	}{SchemaVersion: workspaceSchemaVersion, Retries: retries})
+	}{SchemaVersion: evidenceSchemaVersion, Retries: retries})
 }
 
 func structuredJudgePrompt(instructions string, input any) (string, error) {
@@ -509,7 +509,7 @@ func persistGradingError(iteration, stage, grader, comparator string, mappings m
 		Comparator    string                  `json:"comparator_response,omitempty"`
 		Responses     []string                `json:"judge_responses,omitempty"`
 		Mappings      map[string]blindMapping `json:"blind_mappings"`
-	}{SchemaVersion: workspaceSchemaVersion, Stage: stage, Error: cause.Error(), Grader: grader, Comparator: comparator, Responses: responses, Mappings: mappings})
+	}{SchemaVersion: evidenceSchemaVersion, Stage: stage, Error: cause.Error(), Grader: grader, Comparator: comparator, Responses: responses, Mappings: mappings})
 }
 
 func runKey(id string, trial int, variant string) string {

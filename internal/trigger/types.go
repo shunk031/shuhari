@@ -2,6 +2,11 @@ package trigger
 
 import "time"
 
+const (
+	triggerArtifactSchemaVersion = "2"
+	triggerManifestSchemaVersion = "2"
+)
+
 type Case struct {
 	ID            string `json:"id"`
 	Prompt        string `json:"prompt"`
@@ -21,7 +26,7 @@ type Config struct {
 	Timeout         time.Duration `json:"timeout"`
 	Model           string        `json:"model,omitempty"`
 	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
-	Sandbox         string        `json:"sandbox"`
+	SandboxLevel    string        `json:"sandbox_level"`
 	Network         bool          `json:"network"`
 	Workspace       string        `json:"-"`
 	StrictAllTrials bool          `json:"strict_all_trials"`
