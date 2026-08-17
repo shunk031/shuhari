@@ -20,6 +20,8 @@ const (
 var groundingTokenPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)
 var absenceAssertionCuePattern = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:not|no|never|without|absent|absence|lack|lacks|free[[:space:]]+of|exclude|excluding|doesn.t|do[[:space:]]+not|cannot|can.t)(?:$|[^\p{L}\p{N}])`)
 
+var absenceClauseBoundaryPattern = regexp.MustCompile(`(?i)\s+(?:and|but|while)\s+|[.!?;]+`)
+
 var observationQuotePairs = map[rune]rune{
 	'"': '"',
 	'“': '”',
@@ -80,12 +82,49 @@ func groundAbsence(claim *AbsenceClaim, artifact string) evidenceGrounding {
 }
 
 func supportsAbsenceClaim(assertion string, query string) bool {
-	normalizedAssertion := strings.ToLower(normalizeEvidenceText(assertion))
 	normalizedQuery := strings.ToLower(normalizeEvidenceText(query))
-	if normalizedQuery == "" || !strings.Contains(normalizedAssertion, normalizedQuery) {
+	if normalizedQuery == "" {
 		return false
 	}
-	return absenceAssertionCuePattern.MatchString(normalizedAssertion)
+	for _, clause := range absenceAssertionClauses(assertion) {
+		if strings.Contains(clause, normalizedQuery) || absenceQueryMatchesNegatedAction(clause, normalizedQuery) {
+			return true
+		}
+	}
+	return false
+}
+
+func absenceAssertionClauses(assertion string) []string {
+	normalized := strings.ToLower(normalizeEvidenceText(assertion))
+	clauses := absenceClauseBoundaryPattern.Split(normalized, -1)
+	negative := make([]string, 0, len(clauses))
+	for _, clause := range clauses {
+		if absenceAssertionCuePattern.MatchString(clause) {
+			negative = append(negative, clause)
+		}
+	}
+	return negative
+}
+
+func absenceQueryMatchesNegatedAction(clause, query string) bool {
+	// A command-shaped query may not appear verbatim in a prose clause. Match
+	// only the negated clause's leading action so unrelated commands stay invalid.
+	cue := absenceAssertionCuePattern.FindStringIndex(clause)
+	if cue == nil {
+		return false
+	}
+	actionTokens := tokenizeGroundingText(clause[cue[1]:])
+	queryTokens := tokenizeGroundingText(query)
+	if len(actionTokens) == 0 || len(queryTokens) == 0 {
+		return false
+	}
+	action := actionTokens[0].Value
+	for _, token := range queryTokens {
+		if token.Value == action {
+			return true
+		}
+	}
+	return false
 }
 
 func groundParaphrase(quote, artifact string) evidenceGrounding {
