@@ -10,3 +10,10 @@ For a passing assertion that is specifically about an absence, also return an `a
 object with one literal `query` string. The validator will pass that assertion only when
 the normalized query has no match anywhere in the artifact; do not use an absence object
 for a presence assertion, and do not infer absence from a quoted sentence alone.
+
+The `A` and `B` fields are full artifact views and include harness framing such as file
+labels and metadata. `A_response` and `B_response` are the exact raw agent response
+payloads without that framing. For assertions about "the response" or what it returns,
+including exclusivity or "only" claims, judge only the corresponding raw response field.
+Harness framing is not agent output, while extra content inside a raw response remains
+part of that response and must still fail an exclusivity assertion.

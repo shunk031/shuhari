@@ -31,6 +31,38 @@ type provenanceRetryHarness struct {
 	next      int
 }
 
+type rawResponseExclusivityHarness struct {
+	recordingJudgeHarness
+}
+
+func (h *rawResponseExclusivityHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
+	if strings.Contains(string(request.OutputSchema), `"preferred"`) {
+		return h.recordingJudgeHarness.Run(context.Background(), request)
+	}
+	h.mu.Lock()
+	h.requests = append(h.requests, request)
+	h.mu.Unlock()
+	payload := request.Prompt[strings.LastIndex(request.Prompt, "\n\n")+2:]
+	var inputs []judgeInput
+	if err := json.Unmarshal([]byte(payload), &inputs); err != nil {
+		return harness.Result{}, err
+	}
+	const assertion = "The response returns only the requested three-sentence prose draft."
+	result := func(response string) AssertionResult {
+		response = strings.TrimSpace(response)
+		if response == "one\ntwo\nthree" {
+			return AssertionResult{Text: assertion, Passed: true, Evidence: fmt.Sprintf("The raw response is %q.", response)}
+		}
+		return AssertionResult{Text: assertion, Passed: false, Evidence: `The raw response includes "extra content".`}
+	}
+	output := judgeOutput{Cases: make([]judgeEntry, 0, len(inputs))}
+	for _, input := range inputs {
+		output.Cases = append(output.Cases, judgeEntry{ID: input.ID, Trial: input.Trial, AAssertionResults: []AssertionResult{result(input.AResponse)}, BAssertionResults: []AssertionResult{result(input.BResponse)}})
+	}
+	encoded, _ := json.Marshal(output)
+	return harness.Result{Response: string(encoded)}, nil
+}
+
 func (h *provenanceRetryHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
 	h.mu.Lock()
 	h.requests = append(h.requests, request)
@@ -294,6 +326,76 @@ func TestBuildGradingRejectsBlankOrUnsupportedEvidence(t *testing.T) {
 	}
 	if groundEvidence("Observed `actual output`.", "actual output").Kind != evidenceGroundingHallucination {
 		t.Fatal("backticks were accepted as quotation marks")
+	}
+}
+
+func TestGradeRunsPassesRawResponsesAlongsideFramedArtifacts(t *testing.T) {
+	t.Parallel()
+
+	suite, results := oneTrialJudgeSuite(t)
+	for index := range results {
+		results[index].Artifact = "--- file: response.md (bytes) ---\n" + results[index].Variant + " artifact\n"
+		if results[index].Variant == variantWithSkill {
+			results[index].Agent.Response = "one\ntwo\nthree\n"
+		} else {
+			results[index].Agent.Response = "one\ntwo\nthree\nextra content\n"
+		}
+	}
+	agent := &recordingJudgeHarness{}
+	if _, _, _, _, _, err := gradeRuns(context.Background(), agent, suite, results, Config{Trials: 1, Timeout: time.Second}, testJudgeSecurity(), t.TempDir()); err != nil {
+		t.Fatalf("gradeRuns() error = %v", err)
+	}
+	var foundCandidate, foundBaseline bool
+	for _, request := range agent.requests {
+		if len(request.OutputSchema) == 0 {
+			continue
+		}
+		payload := request.Prompt[strings.LastIndex(request.Prompt, "\n\n")+2:]
+		var inputs []judgeInput
+		if err := json.Unmarshal([]byte(payload), &inputs); err != nil {
+			t.Fatalf("decode grader input: %v", err)
+		}
+		for _, input := range inputs {
+			foundCandidate = foundCandidate || input.AResponse == "one\ntwo\nthree\n" || input.BResponse == "one\ntwo\nthree\n"
+			foundBaseline = foundBaseline || input.AResponse == "one\ntwo\nthree\nextra content\n" || input.BResponse == "one\ntwo\nthree\nextra content\n"
+		}
+	}
+	if !foundCandidate || !foundBaseline {
+		t.Fatalf("raw responses were not preserved in grader input: candidate=%v baseline=%v", foundCandidate, foundBaseline)
+	}
+}
+
+func TestExclusivityUsesRawResponseNotArtifactFraming(t *testing.T) {
+	t.Parallel()
+
+	suite, results := oneTrialJudgeSuite(t)
+	const assertion = "The response returns only the requested three-sentence prose draft."
+	suite.Cases[0].Assertions = []string{assertion}
+	for index := range results {
+		results[index].Case = suite.Cases[0]
+		if results[index].Variant == variantWithSkill {
+			results[index].Agent.Response = "one\ntwo\nthree\n"
+		} else {
+			results[index].Agent.Response = "one\ntwo\nthree\nextra content\n"
+		}
+		results[index].Artifact = fmt.Sprintf("--- file: response.md (%d bytes) ---\n%s", len(results[index].Agent.Response), results[index].Agent.Response)
+	}
+	if _, _, _, _, _, err := gradeRuns(context.Background(), &rawResponseExclusivityHarness{}, suite, results, Config{Trials: 1, Timeout: time.Second}, testJudgeSecurity(), t.TempDir()); err != nil {
+		t.Fatalf("gradeRuns() error = %v", err)
+	}
+	for _, result := range results {
+		contents, err := os.ReadFile(filepath.Join(result.RunDir, "grading.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var grading Grading
+		if err := json.Unmarshal(contents, &grading); err != nil {
+			t.Fatal(err)
+		}
+		wantPassed := result.Variant == variantWithSkill
+		if got := grading.Summary.Failed == 0; got != wantPassed {
+			t.Fatalf("%s grading passed = %v, want %v: %s", result.Variant, got, wantPassed, contents)
+		}
 	}
 }
 
