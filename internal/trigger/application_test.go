@@ -17,6 +17,7 @@ import (
 
 type applicationVerdictHarness struct {
 	mu             sync.Mutex
+	judgeError     error
 	judgePrompts   []string
 	judgeVerdicts  map[string]string
 	judgeEvidence  map[string]string
@@ -40,6 +41,9 @@ func (h *applicationVerdictHarness) Run(_ context.Context, request harness.Reque
 		h.mu.Lock()
 		h.judgePrompts = append(h.judgePrompts, request.Prompt)
 		h.mu.Unlock()
+		if h.judgeError != nil {
+			return harness.Result{}, h.judgeError
+		}
 		for marker, verdict := range h.judgeVerdicts {
 			if strings.Contains(request.Prompt, marker) {
 				encoded, _ := json.Marshal(map[string]string{"verdict": verdict, "evidence": h.judgeEvidence[marker]})
@@ -59,6 +63,21 @@ func (h *applicationVerdictHarness) Run(_ context.Context, request harness.Reque
 		TargetRead: name != "no-read",
 		Duration:   time.Millisecond,
 	}, nil
+}
+
+func TestDecodeApplicationJudgeOutputRejectsInvalidResponses(t *testing.T) {
+	t.Parallel()
+
+	for _, response := range []string{
+		`not json`,
+		`{"verdict":"applied","evidence":"grounded"} {}`,
+		`{"verdict":"unknown","evidence":"grounded"}`,
+		`{"verdict":"declined","evidence":" "}`,
+	} {
+		if _, err := decodeApplicationJudgeOutput(response); err == nil {
+			t.Fatalf("decodeApplicationJudgeOutput(%q) succeeded", response)
+		}
+	}
 }
 
 func TestRunClassifiesApplicationInsteadOfConsultation(t *testing.T) {
@@ -150,6 +169,41 @@ func TestRunFailsClosedOnAmbiguousApplication(t *testing.T) {
 		t.Fatalf("Run() error = %v, want ambiguous application refusal", err)
 	}
 	assertApplicationArtifact(t, report.Workspace, "ambiguous", "ambiguous", false)
+}
+
+func TestRunRecordsApplicationJudgeTransportExhaustion(t *testing.T) {
+	t.Parallel()
+
+	suite := newApplicationSuite(t, []Case{
+		{ID: "apply", Prompt: "read-then-apply", ShouldTrigger: true},
+		{ID: "no-read", Prompt: "no-read", ShouldTrigger: false},
+	})
+	attemptErrors := make([]harness.AttemptError, 0, 3)
+	for attempt := 1; attempt <= 3; attempt++ {
+		attemptErrors = append(attemptErrors, harness.AttemptError{
+			Attempt: attempt, Error: "stream disconnected before completion", Timestamp: time.Now().UTC(), DurationMS: 10, StdoutBytes: 12, StderrBytes: 34,
+		})
+	}
+	agent := &applicationVerdictHarness{
+		transcriptRoot: "testdata",
+		judgeError: &harness.RetryError{
+			Cause:    errors.New("stream disconnected before completion"),
+			Attempts: harness.AttemptEvidence{AttemptCount: 3, AttemptErrors: attemptErrors},
+		},
+	}
+	report, err := Run(context.Background(), suite, agent, cache.Store{Root: t.TempDir()}, Config{
+		Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), NoCache: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "run application judge") {
+		t.Fatalf("Run() error = %v, want application judge transport error", err)
+	}
+	contents, readErr := os.ReadFile(filepath.Join(report.Workspace, "case-apply", "trial-1", "application-timing.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(contents), `"attempt_count": 3`) || strings.Count(string(contents), "stream disconnected before completion") != 3 {
+		t.Fatalf("application timing lacks exhausted attempts: %s", contents)
+	}
 }
 
 func newApplicationSuite(t *testing.T, cases []Case) Suite {
