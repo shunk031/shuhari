@@ -9,10 +9,16 @@
 
 ## Supported agents
 
-- [x] [Codex CLI](https://developers.openai.com/codex/): install `codex`, put it on your `PATH`, and sign in with `codex login`.
-- [ ] Claude Code
-- [ ] Gemini CLI
-- [ ] Antigravity
+Agents are listed alphabetically by product name; support status reflects the adapters currently implemented in Shuhari.
+
+| Agent | Support | Notes |
+| --- | --- | --- |
+| [![google-antigravity/antigravity-cli](https://img.shields.io/github/v/tag/google-antigravity/antigravity-cli?color=8E75B2&display_name=release&label=antigravity-cli&logo=googlegemini&logoColor=8E75B2&sort=semver)](https://github.com/google-antigravity/antigravity-cli) | Not yet supported | Adapter not implemented; replaces Gemini CLI for individual/free users. |
+| [![anthropics/claude-code](https://img.shields.io/github/v/tag/anthropics/claude-code?color=D97757&display_name=release&label=claude-code&logo=claudecode&logoColor=D97757&sort=semver)](https://github.com/anthropics/claude-code) | Not yet supported | Adapter not implemented. |
+| [![openai/codex](https://img.shields.io/github/v/tag/openai/codex?color=0081A5&display_name=release&label=codex&logo=openaigym&logoColor=0081A5&sort=semver)](https://github.com/openai/codex) | ✅ Supported | Install `codex`, add it to your `PATH`, and run `codex login` before using Shuhari. |
+| [![cursor-cli](https://img.shields.io/badge/cursor-cli-000000?logo=cursor&logoColor=white)](https://cursor.com/docs/cli/overview) | Not yet supported | Adapter not implemented. |
+| [![opencode](https://img.shields.io/github/v/tag/anomalyco/opencode?color=111111&display_name=release&label=opencode&logo=opencode&logoColor=111111&sort=semver)](https://github.com/anomalyco/opencode) | Not yet supported | Adapter not implemented. |
+| Other coding agents | Planned | Additional adapters are planned. |
 
 Adapters are narrow; eval schemas and workspace artifacts stay the same across agents. See the [development architecture contract](docs/architecture.md) and the [evaluation framework comparison](docs/comparison.md).
 
