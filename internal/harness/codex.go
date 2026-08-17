@@ -388,10 +388,24 @@ func (h *codexHarness) runOnce(parent context.Context, request Request, firstTok
 	if err != nil {
 		return Result{}, attemptObservation{}, err
 	}
+	ctx, cancel := context.WithTimeout(parent, request.Timeout)
+	defer cancel()
 
 	args := []string{"--disable", "plugins", "exec"}
 	if request.Model != "" {
 		args = append(args, "--model", request.Model)
+	}
+	if strings.TrimSpace(request.Model) != "" {
+		// Codex 0.146.0 refreshes /models for root sessions even when an explicit
+		// model is supplied. Its pinned decoder expects a Codex-only `models`
+		// field, while OpenAI-compatible gateways return the standard `data`
+		// field. A bundled catalog keeps explicit model resolution independent of
+		// that optional refresh without changing provider or credential settings.
+		modelCatalogPath := filepath.Join(temporary, "bundled-models.json")
+		if err := writeBundledModelCatalog(ctx, h.executable, codexHome, modelCatalogPath); err != nil {
+			return Result{}, attemptObservation{}, err
+		}
+		args = append(args, "-c", "model_catalog_json="+tomlString(modelCatalogPath))
 	}
 	if request.ReasoningEffort != "" {
 		value, _ := json.Marshal(request.ReasoningEffort)
@@ -414,8 +428,6 @@ func (h *codexHarness) runOnce(parent context.Context, request Request, firstTok
 	}
 	args = append(args, "-")
 
-	ctx, cancel := context.WithTimeout(parent, request.Timeout)
-	defer cancel()
 	command := exec.CommandContext(ctx, h.executable, args...)
 	command.Stdin = strings.NewReader(request.Prompt)
 	command.Env = codexEnvironment(codexHome)
@@ -879,6 +891,38 @@ func initializeCodexHome(destination string) error {
 		if err := os.WriteFile(filepath.Join(destination, name), contents, 0o600); err != nil {
 			return fmt.Errorf("copy codex %s: %w", name, err)
 		}
+	}
+	return nil
+}
+
+func writeBundledModelCatalog(ctx context.Context, executable, codexHome, destination string) error {
+	command := exec.CommandContext(ctx, executable, "--disable", "plugins", "debug", "models", "--bundled")
+	command.Env = codexEnvironment(codexHome)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = strings.TrimSpace(stdout.String())
+		}
+		return fmt.Errorf("prepare bundled Codex model catalog: %w: %s", err, message)
+	}
+	var catalog struct {
+		Models json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
+		return fmt.Errorf("decode bundled Codex model catalog: %w", err)
+	}
+	var models []json.RawMessage
+	if err := json.Unmarshal(catalog.Models, &models); err != nil {
+		return fmt.Errorf("decode bundled Codex model catalog models: %w", err)
+	}
+	if len(models) == 0 {
+		return errors.New("decode bundled Codex model catalog: response has no models list")
+	}
+	if err := os.WriteFile(destination, stdout.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("write bundled Codex model catalog: %w", err)
 	}
 	return nil
 }
