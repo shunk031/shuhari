@@ -802,6 +802,44 @@ func TestJudgeSchemasAreValidJSON(t *testing.T) {
 	}
 }
 
+func TestGraderSchemaUsesStrictNullableAbsenceField(t *testing.T) {
+	t.Parallel()
+
+	var schema struct {
+		Definitions map[string]struct {
+			Items struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+				Required   []string                   `json:"required"`
+			} `json:"items"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(graderSchema(), &schema); err != nil {
+		t.Fatalf("decode grader schema: %v", err)
+	}
+	assertionResults, ok := schema.Definitions["assertion_results"]
+	if !ok {
+		t.Fatal("grader schema has no assertion_results definition")
+	}
+	requiredProperties := make(map[string]bool, len(assertionResults.Items.Required))
+	for _, required := range assertionResults.Items.Required {
+		requiredProperties[required] = true
+	}
+	for property := range assertionResults.Items.Properties {
+		if !requiredProperties[property] {
+			t.Fatalf("grader schema does not require assertion property %q: %v", property, assertionResults.Items.Required)
+		}
+	}
+	var absence struct {
+		Type []string `json:"type"`
+	}
+	if err := json.Unmarshal(assertionResults.Items.Properties["absence"], &absence); err != nil {
+		t.Fatalf("decode absence schema: %v", err)
+	}
+	if got, want := absence.Type, []string{"object", "null"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("absence type = %v, want %v", got, want)
+	}
+}
+
 func TestGradeRunsHandlesCaseWhoseTrialsOnlyFitIndividually(t *testing.T) {
 	t.Parallel()
 
