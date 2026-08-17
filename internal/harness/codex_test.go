@@ -421,11 +421,107 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input
 	}
 }
 
+func TestCodexRunUsesBundledModelCatalogForUnsetModelAfterRefreshDecodeFailure(t *testing.T) {
+	capture := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
+has_catalog=
+for argument in "$@"; do
+  case "$argument" in
+    model_catalog_json=*)
+      has_catalog=1
+      catalog_path=${argument#model_catalog_json=}
+      catalog_path=${catalog_path#\"}
+      catalog_path=${catalog_path%%\"}
+      cp "$catalog_path" %q/catalog.json
+      ;;
+  esac
+done
+if test -z "$has_catalog"; then
+  printf '%%s\n' '{"type":"error","message":"error decoding response body: missing field models; gateway body={\"object\":\"list\",\"data\":[{\"id\":\"default-model\"}]}"}'
+  exit 1
+fi
+printf '%%s\n' "$@" > %q/args
+printf '%%s\n' '{"type":"item.completed","item":{"id":"1","type":"agent_message","text":"done"}}'
+printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}'
+`, capture, capture)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", t.TempDir())
+	agent := newCodex(Config{Executable: script})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated, Network: true})
+	result, err := agent.Run(context.Background(), Request{
+		WorkDir:  t.TempDir(),
+		Prompt:   "test",
+		Security: security,
+		Timeout:  time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Response != "done" {
+		t.Fatalf("response = %q", result.Response)
+	}
+	arguments, err := os.ReadFile(filepath.Join(capture, "args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(arguments), "--model\n") {
+		t.Fatalf("unset-model invocation unexpectedly selected an explicit model:\n%s", arguments)
+	}
+	catalog, err := os.ReadFile(filepath.Join(capture, "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(catalog), `"bundled-model"`) {
+		t.Fatalf("unset-model invocation did not pass the bundled model catalog to Codex: %s", catalog)
+	}
+}
+
+func TestCodexRunRejectsEmptyBundledModelCatalog(t *testing.T) {
+	capture := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%%s\n' '{"models":[]}'
+  exit 0
+fi
+touch %q/exec
+`, capture)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", t.TempDir())
+	agent := newCodex(Config{Executable: script})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+	_, err := agent.Run(context.Background(), Request{
+		WorkDir:  t.TempDir(),
+		Prompt:   "test",
+		Security: security,
+		Timeout:  time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "response has no models list") {
+		t.Fatalf("Run() error = %v, want empty bundled catalog rejection", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(capture, "exec")); !os.IsNotExist(statErr) {
+		t.Fatalf("Codex exec ran after empty bundled catalog: %v", statErr)
+	}
+}
+
 func TestCodexRunMatchesShellWriteBeforeGitHubActionWithoutInventingOrder(t *testing.T) {
 	t.Parallel()
 
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	contents := `#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
 previous=
 workdir=
 for argument in "$@"; do
@@ -489,6 +585,10 @@ func TestDangerFullAccessCredentialProbeIsExplicitlyLabeledNoBoundary(t *testing
 	capture := t.TempDir()
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
 /bin/sh -c 'client_home=$(tr "\000" "\n" < /proc/$PPID/environ | sed -n "s/^CODEX_HOME=//p"); cat "$client_home/auth.json"' > %q/leaked
 printf '%%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"read parent auth material","aggregated_output":"credential probe completed","exit_code":0,"status":"completed"}}'
 printf '%%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
@@ -626,6 +726,10 @@ func TestCodexRetryRestoresPristineWorkDirectory(t *testing.T) {
 	capture := t.TempDir()
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
 count_file=%q/count
 count=0
 if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
@@ -675,6 +779,10 @@ func TestCodexRetriesDisconnectedStreamThenSucceeds(t *testing.T) {
 	capture := t.TempDir()
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
 count_file=%q/count
 count=0
 if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
@@ -718,6 +826,10 @@ func TestCodexStopsAfterTwoTransportRetries(t *testing.T) {
 	capture := t.TempDir()
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
 count_file=%q/count
 count=0
 if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
@@ -761,6 +873,10 @@ func TestCodexDoesNotRetryCompletedResponse(t *testing.T) {
 	capture := t.TempDir()
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
 count_file=%q/count
 count=0
 if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
@@ -850,6 +966,10 @@ exit 0`,
 			capture := t.TempDir()
 			script := filepath.Join(t.TempDir(), "fake-codex")
 			contents := fmt.Sprintf(`#!/bin/sh
+			if test "$3" = debug && test "$4" = models; then
+			  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+			  exit 0
+			fi
 count_file=%q/count
 count=0
 if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
@@ -982,6 +1102,10 @@ exit 2`,
 			capture := t.TempDir()
 			script := filepath.Join(t.TempDir(), "fake-codex")
 			contents := fmt.Sprintf(`#!/bin/sh
+			if test "$3" = debug && test "$4" = models; then
+			  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+			  exit 0
+			fi
 count_file=%q/count
 count=0
 if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
@@ -1088,6 +1212,10 @@ func TestCodexDoesNotRetryInputTooLarge(t *testing.T) {
 	capture := t.TempDir()
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
 count_file=%q/count
 count=0
 if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi

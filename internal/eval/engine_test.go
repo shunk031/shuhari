@@ -145,6 +145,10 @@ func TestExecuteTaskRetriesProductionTransportAfterInterimMessage(t *testing.T) 
 	capture := t.TempDir()
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+	printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+	exit 0
+fi
 count_file=%q/count
 count=0
 if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
