@@ -287,23 +287,13 @@ func codexTraceCompleted(trace []byte) bool {
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		var event struct {
-			Type string          `json:"type"`
-			Item json.RawMessage `json:"item"`
+			Type string `json:"type"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &event) != nil {
 			continue
 		}
 		if event.Type == "turn.completed" {
 			return true
-		}
-		if event.Type == "item.completed" {
-			var item struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}
-			if json.Unmarshal(event.Item, &item) == nil && item.Type == "agent_message" && strings.TrimSpace(item.Text) != "" {
-				return true
-			}
 		}
 	}
 	return false
@@ -364,7 +354,7 @@ func parseCodexTrace(trace []byte, target Target) (Result, error) {
 			if message == "" {
 				message = "Codex turn failed without an error message"
 			}
-			if !turnCompleted && lastMessageEvent < 0 && transientPattern.MatchString(message) {
+			if !turnCompleted && transientPattern.MatchString(message) {
 				return Result{}, fmt.Errorf("%w: %s", ErrTransient, message)
 			}
 			return Result{}, errors.New(message)
