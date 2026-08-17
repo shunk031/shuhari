@@ -102,6 +102,8 @@ Schema-v2 manifests and evaluation verdicts record the neutral level, network ac
 
 Protected runs give the Codex client a private temporary home while child commands receive a minimal environment that denies source and temporary Codex homes. Claude Code and Gemini CLI remain unsupported until their adapters pass conformance.
 
+Codex cancels and retries an attempt with no model item after 90 seconds. Set `SHUHARI_FIRST_TOKEN_TIMEOUT` to a longer positive duration only when first items routinely take longer; after the first item, only the normal run timeout applies.
+
 ## Adapter contract
 
 - `Capabilities` declares skill, instructions, and trigger-evidence support.

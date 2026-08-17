@@ -25,6 +25,11 @@ var inputTooLargePattern = regexp.MustCompile(`(?i)(?:input_too_large|input exce
 
 const maxCodexAttempts = 3
 
+const (
+	firstTokenTimeoutEnv     = "SHUHARI_FIRST_TOKEN_TIMEOUT"
+	defaultFirstTokenTimeout = 90 * time.Second
+)
+
 type codexHarness struct {
 	executable      string
 	waitBeforeRetry func(context.Context, int) error
@@ -248,6 +253,10 @@ func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error)
 	if err := validateCodexSecurityResolution(request.Security); err != nil {
 		return Result{}, err
 	}
+	firstTokenTimeout, err := configuredFirstTokenTimeout()
+	if err != nil {
+		return Result{}, err
+	}
 	if err := os.MkdirAll(request.WorkDir, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create work directory: %w", err)
 	}
@@ -265,7 +274,7 @@ func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error)
 		if err := restoreDirectory(snapshot, request.WorkDir); err != nil {
 			return Result{}, err
 		}
-		result, observation, err := h.runOnce(ctx, request)
+		result, observation, err := h.runOnce(ctx, request, firstTokenTimeout)
 		if err == nil && strings.TrimSpace(result.Response) != "" {
 			evidence.AttemptCount = attempt
 			result.Attempts = evidence
@@ -303,6 +312,21 @@ func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error)
 	panic("unreachable")
 }
 
+func configuredFirstTokenTimeout() (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(firstTokenTimeoutEnv))
+	if value == "" {
+		return defaultFirstTokenTimeout, nil
+	}
+	timeout, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s=%q as a positive duration: %w", firstTokenTimeoutEnv, value, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration, got %q", firstTokenTimeoutEnv, value)
+	}
+	return timeout, nil
+}
+
 func validateCodexSecurityResolution(resolution SecurityResolution) error {
 	policy := resolution.Policy()
 	if err := ValidateSecurityResolution(policy, resolution); err != nil {
@@ -333,7 +357,7 @@ type attemptObservation struct {
 	StderrBytes int64
 }
 
-func (h *codexHarness) runOnce(parent context.Context, request Request) (Result, attemptObservation, error) {
+func (h *codexHarness) runOnce(parent context.Context, request Request, firstTokenTimeout time.Duration) (Result, attemptObservation, error) {
 	if err := ensureGitRepository(request.WorkDir); err != nil {
 		return Result{}, attemptObservation{}, err
 	}
@@ -391,10 +415,33 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 	command.Stdin = strings.NewReader(request.Prompt)
 	command.Env = codexEnvironment(codexHome)
 	started := time.Now()
-	stdout, stderr := bytes.Buffer{}, bytes.Buffer{}
-	command.Stdout = &stdout
+	stdout, stderr := newCodexTraceObserver(), bytes.Buffer{}
+	command.Stdout = stdout
 	command.Stderr = &stderr
+	commandDone := make(chan struct{})
+	watchdogExpired := make(chan struct{}, 1)
+	watchdogFinished := make(chan struct{})
+	go func() {
+		defer close(watchdogFinished)
+		timer := time.NewTimer(firstTokenTimeout)
+		defer timer.Stop()
+		select {
+		case <-stdout.FirstModelItem():
+		case <-commandDone:
+		case <-ctx.Done():
+		case <-timer.C:
+			select {
+			case <-stdout.FirstModelItem():
+				return
+			default:
+			}
+			watchdogExpired <- struct{}{}
+			cancel()
+		}
+	}()
 	err = command.Run()
+	close(commandDone)
+	<-watchdogFinished
 	duration := time.Since(started)
 	observation := attemptObservation{
 		Timestamp:   started.UTC(),
@@ -403,6 +450,14 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 		StderrBytes: int64(stderr.Len()),
 	}
 	completed := codexTraceCompleted(stdout.Bytes())
+	select {
+	case <-watchdogExpired:
+		if completed {
+			return Result{}, observation, errors.New("codex first-token watchdog expired after a completed response")
+		}
+		return Result{}, observation, fmt.Errorf("%w: codex produced no model output within %s", ErrTransient, firstTokenTimeout)
+	default:
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		if completed {
 			return Result{}, observation, fmt.Errorf("codex timed out after a completed response")
@@ -436,6 +491,61 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 		result.OrderUnknownActions = append(result.OrderUnknownActions, ActionFileChange)
 	}
 	return result, observation, nil
+}
+
+type codexTraceObserver struct {
+	trace          bytes.Buffer
+	pending        []byte
+	firstModelItem chan struct{}
+	seenModelItem  bool
+}
+
+func newCodexTraceObserver() *codexTraceObserver {
+	return &codexTraceObserver{firstModelItem: make(chan struct{})}
+}
+
+func (observer *codexTraceObserver) Write(data []byte) (int, error) {
+	written, err := observer.trace.Write(data)
+	observer.pending = append(observer.pending, data...)
+	for {
+		newline := bytes.IndexByte(observer.pending, '\n')
+		if newline < 0 {
+			break
+		}
+		line := observer.pending[:newline]
+		observer.pending = observer.pending[newline+1:]
+		if !observer.seenModelItem && codexTraceLineStartsModelItem(line) {
+			observer.seenModelItem = true
+			close(observer.firstModelItem)
+		}
+	}
+	return written, err
+}
+
+func (observer *codexTraceObserver) Bytes() []byte {
+	return observer.trace.Bytes()
+}
+
+func (observer *codexTraceObserver) Len() int {
+	return observer.trace.Len()
+}
+
+func (observer *codexTraceObserver) String() string {
+	return observer.trace.String()
+}
+
+func (observer *codexTraceObserver) FirstModelItem() <-chan struct{} {
+	return observer.firstModelItem
+}
+
+func codexTraceLineStartsModelItem(line []byte) bool {
+	var event struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(line, &event) != nil {
+		return false
+	}
+	return event.Type == "item.started" || event.Type == "item.updated" || event.Type == "item.completed"
 }
 
 func codexTraceCompleted(trace []byte) bool {
