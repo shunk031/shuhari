@@ -33,6 +33,8 @@ type judgeInput struct {
 	Assertions []string `json:"assertions"`
 	A          string   `json:"A"`
 	B          string   `json:"B"`
+	AResponse  string   `json:"A_response"`
+	BResponse  string   `json:"B_response"`
 }
 
 type judgeEntry struct {
@@ -54,6 +56,8 @@ type comparatorInput struct {
 	Assertions     []string `json:"assertions"`
 	A              string   `json:"A"`
 	B              string   `json:"B"`
+	AResponse      string   `json:"A_response"`
+	BResponse      string   `json:"B_response"`
 }
 
 type comparatorEntry struct {
@@ -122,11 +126,12 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 			mapping := blindLabels(item.ID, trial, withVariant, withoutVariant)
 			mappings[caseTrialKey(item.ID, trial)] = mapping
 			outputs := map[string]string{withVariant: with.Artifact, withoutVariant: without.Artifact}
+			responses := map[string]string{withVariant: with.Agent.Response, withoutVariant: without.Agent.Response}
 			trialInputs = append(trialInputs, trialJudgeInputs{
 				ID:         item.ID,
 				Trial:      trial,
-				Grader:     judgeInput{ID: item.ID, Trial: trial, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B]},
-				Comparator: comparatorInput{ID: item.ID, Trial: trial, Prompt: item.Prompt, ExpectedOutput: item.ExpectedOutput, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B]},
+				Grader:     judgeInput{ID: item.ID, Trial: trial, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B], AResponse: responses[mapping.A], BResponse: responses[mapping.B]},
+				Comparator: comparatorInput{ID: item.ID, Trial: trial, Prompt: item.Prompt, ExpectedOutput: item.ExpectedOutput, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B], AResponse: responses[mapping.A], BResponse: responses[mapping.B]},
 			})
 		}
 	}
