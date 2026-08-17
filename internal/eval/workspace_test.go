@@ -179,6 +179,34 @@ func TestCopyOutputsDoesNotTraverseDirectorySymlink(t *testing.T) {
 	}
 }
 
+func TestCopyOutputsRecordsDirectoryShapedSourceSymlinkWithoutFollowing(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	target := filepath.Join(root, "agent-output")
+	mustWrite(t, filepath.Join(target, "secret.txt"), "must not be followed\n")
+	source := filepath.Join(root, "outputs")
+	if err := os.Symlink(target, source); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "collected")
+
+	if err := copyOutputs(source, destination); err != nil {
+		t.Fatalf("copyOutputs() crashed on directory-shaped source symlink: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "secret.txt")); err == nil {
+		t.Fatal("directory-shaped source symlink was followed")
+	}
+	metadata := filepath.Join(destination, ".shuhari-symlink.json")
+	contents, err := os.ReadFile(metadata)
+	if err != nil {
+		t.Fatalf("source symlink metadata missing: %v", err)
+	}
+	if !strings.Contains(string(contents), `"link": "."`) || !strings.Contains(string(contents), "not followed") {
+		t.Fatalf("source symlink metadata = %s", contents)
+	}
+}
+
 func TestRenderArtifactUsesMetadataForNonText(t *testing.T) {
 	t.Parallel()
 

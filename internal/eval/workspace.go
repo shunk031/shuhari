@@ -94,12 +94,19 @@ func copyOutputs(source, destination string) error {
 	if err := os.MkdirAll(destination, 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
-	info, err := os.Stat(source)
+	info, err := os.Lstat(source)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("inspect agent outputs: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		linkTarget, err := os.Readlink(source)
+		if err != nil {
+			return fmt.Errorf("read agent output symlink .: %w", err)
+		}
+		return writeSymlinkMetadata(filepath.Join(destination, ".shuhari-symlink.json"), ".", linkTarget)
 	}
 	if !info.IsDir() {
 		return errors.New("agent outputs path is not a directory")
