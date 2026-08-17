@@ -28,6 +28,50 @@ func TestBuildGradingAcceptsStructuredAbsenceClaim(t *testing.T) {
 	}
 }
 
+func TestBuildGradingAcceptsAbsenceClaimForMixedAssertion(t *testing.T) {
+	t.Parallel()
+
+	assertion := "The response uses an explicit HTTPS push URL and does not approve the pull request as the bot."
+	query := "gh pr review --approve --repo creative-graphic-design/design-generators"
+	artifact := "git remote set-url --push origin https://github.com/creative-graphic-design/design-generators The bot must not approve its own pull request."
+	grading, err := buildGrading(
+		[]string{assertion},
+		[]AssertionResult{{
+			Text:     assertion,
+			Passed:   true,
+			Evidence: `"git remote set-url --push origin https://github.com/creative-graphic-design/design-generators The bot must not approve its own pull request."`,
+			Absence:  &AbsenceClaim{Query: query},
+		}},
+		artifact,
+	)
+	if err != nil {
+		t.Fatalf("buildGrading() rejected mixed assertion absence claim: %v", err)
+	}
+	result := grading.AssertionResults[0]
+	if result.EvidenceGrounding != evidenceGroundingAbsence || result.EvidenceGroundingObservation != query {
+		t.Fatalf("mixed absence grounding = %q (%q), want absence (%q)", result.EvidenceGrounding, result.EvidenceGroundingObservation, query)
+	}
+}
+
+func TestBuildGradingRejectsUnmatchedMixedAssertionAbsenceClaim(t *testing.T) {
+	t.Parallel()
+
+	assertion := "The response uses an explicit HTTPS push URL and does not approve the pull request as the bot."
+	_, err := buildGrading(
+		[]string{assertion},
+		[]AssertionResult{{
+			Text:     assertion,
+			Passed:   true,
+			Evidence: `"The response uses an explicit HTTPS push URL and does not approve the pull request as the bot."`,
+			Absence:  &AbsenceClaim{Query: "gh pr merge --squash --repo creative-graphic-design/design-generators"},
+		}},
+		"The response uses an explicit HTTPS push URL and does not approve the pull request as the bot.",
+	)
+	if err == nil {
+		t.Fatal("buildGrading() accepted an absence query with no matching negative clause")
+	}
+}
+
 func TestBuildGradingRejectsAmbiguousAbsenceClaim(t *testing.T) {
 	t.Parallel()
 
