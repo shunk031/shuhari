@@ -271,6 +271,10 @@ func TestCodexRunBuildsIsolatedNonInteractiveInvocation(t *testing.T) {
 	capture := t.TempDir()
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
 printf '%%s\n' "$@" > %q/args
 env > %q/env
 if test -f "$CODEX_HOME/shuhari.config.toml"; then
@@ -360,6 +364,60 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input
 	}
 	if strings.Contains(envText, "CODEX_HOME="+sourceHome) || !strings.Contains(envText, "CODEX_HOME=") {
 		t.Fatalf("CODEX_HOME was not isolated:\n%s", envText)
+	}
+}
+
+func TestCodexRunUsesBundledModelCatalogForExplicitModel(t *testing.T) {
+	capture := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
+printf '%%s\n' "$@" > %q/args
+for argument in "$@"; do
+  case "$argument" in
+    model_catalog_json=*)
+      catalog_path=${argument#model_catalog_json=}
+      catalog_path=${catalog_path#\"}
+      catalog_path=${catalog_path%%\"}
+      cp "$catalog_path" %q/catalog.json
+      ;;
+  esac
+done
+printf '%%s\n' '{"type":"item.completed","item":{"id":"1","type":"agent_message","text":"done"}}'
+printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}'
+`, capture, capture)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", t.TempDir())
+	agent := newCodex(Config{Executable: script})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated, Network: true})
+	_, err := agent.Run(context.Background(), Request{
+		WorkDir:  t.TempDir(),
+		Prompt:   "test",
+		Model:    "model-a",
+		Security: security,
+		Timeout:  time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	arguments, err := os.ReadFile(filepath.Join(capture, "args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(arguments), "model_catalog_json=") {
+		t.Fatalf("explicit model invocation did not select a static model catalog:\n%s", arguments)
+	}
+	catalog, err := os.ReadFile(filepath.Join(capture, "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(catalog), `"bundled-model"`) {
+		t.Fatalf("invocation did not pass the bundled model catalog to Codex: %s", catalog)
 	}
 }
 
