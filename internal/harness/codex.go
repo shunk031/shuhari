@@ -395,18 +395,16 @@ func (h *codexHarness) runOnce(parent context.Context, request Request, firstTok
 	if request.Model != "" {
 		args = append(args, "--model", request.Model)
 	}
-	if strings.TrimSpace(request.Model) != "" {
-		// Codex 0.146.0 refreshes /models for root sessions even when an explicit
-		// model is supplied. Its pinned decoder expects a Codex-only `models`
-		// field, while OpenAI-compatible gateways return the standard `data`
-		// field. A bundled catalog keeps explicit model resolution independent of
-		// that optional refresh without changing provider or credential settings.
-		modelCatalogPath := filepath.Join(temporary, "bundled-models.json")
-		if err := writeBundledModelCatalog(ctx, h.executable, codexHome, modelCatalogPath); err != nil {
-			return Result{}, attemptObservation{}, err
-		}
-		args = append(args, "-c", "model_catalog_json="+tomlString(modelCatalogPath))
+	// Codex 0.146.0 resolves an unset model by refreshing /models. Its pinned
+	// decoder expects a Codex-only `models` field, while OpenAI-compatible
+	// gateways return the standard `data` field. The bundled catalog keeps both
+	// explicit and default model resolution independent of that incompatible
+	// refresh without changing provider or credential settings.
+	modelCatalogPath := filepath.Join(temporary, "bundled-models.json")
+	if err := writeBundledModelCatalog(ctx, h.executable, codexHome, modelCatalogPath); err != nil {
+		return Result{}, attemptObservation{}, err
 	}
+	args = append(args, "-c", "model_catalog_json="+tomlString(modelCatalogPath))
 	if request.ReasoningEffort != "" {
 		value, _ := json.Marshal(request.ReasoningEffort)
 		args = append(args, "-c", "model_reasoning_effort="+string(value))
