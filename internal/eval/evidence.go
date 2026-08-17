@@ -8,6 +8,7 @@ import (
 const (
 	evidenceGroundingStrong        = "strong"
 	evidenceGroundingParaphrase    = "paraphrase"
+	evidenceGroundingAbsence       = "absence"
 	evidenceGroundingHallucination = "hallucination"
 	evidenceGroundingNotApplicable = "not_applicable"
 
@@ -17,6 +18,7 @@ const (
 )
 
 var groundingTokenPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)
+var absenceAssertionCuePattern = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:not|no|never|without|absent|absence|lack|lacks|free[[:space:]]+of|exclude|excluding|doesn.t|do[[:space:]]+not|cannot|can.t)(?:$|[^\p{L}\p{N}])`)
 
 var observationQuotePairs = map[rune]rune{
 	'"': '"',
@@ -61,6 +63,29 @@ func groundEvidence(evidence, artifact string) evidenceGrounding {
 		return best
 	}
 	return evidenceGrounding{Kind: evidenceGroundingHallucination, Score: best.Score, Span: best.Span}
+}
+
+func groundAbsence(claim *AbsenceClaim, artifact string) evidenceGrounding {
+	if claim == nil {
+		return evidenceGrounding{Kind: evidenceGroundingHallucination}
+	}
+	query := normalizeEvidenceText(claim.Query)
+	if query == "" || len(tokenizeGroundingText(query)) == 0 {
+		return evidenceGrounding{Kind: evidenceGroundingHallucination}
+	}
+	if strings.Contains(strings.ToLower(normalizeEvidenceText(artifact)), strings.ToLower(query)) {
+		return evidenceGrounding{Kind: evidenceGroundingHallucination, Observation: query}
+	}
+	return evidenceGrounding{Kind: evidenceGroundingAbsence, Score: 1, Observation: query}
+}
+
+func supportsAbsenceClaim(assertion string, query string) bool {
+	normalizedAssertion := strings.ToLower(normalizeEvidenceText(assertion))
+	normalizedQuery := strings.ToLower(normalizeEvidenceText(query))
+	if normalizedQuery == "" || !strings.Contains(normalizedAssertion, normalizedQuery) {
+		return false
+	}
+	return absenceAssertionCuePattern.MatchString(normalizedAssertion)
 }
 
 func groundParaphrase(quote, artifact string) evidenceGrounding {

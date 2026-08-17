@@ -482,6 +482,12 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 		}
 		if result.Passed {
 			grounding := groundEvidence(result.Evidence, artifact)
+			if result.Absence != nil {
+				if !supportsAbsenceClaim(assertion, result.Absence.Query) {
+					return Grading{}, fmt.Errorf("%w: absence claim does not match a negated assertion %q", errInvalidGrading, assertion)
+				}
+				grounding = groundAbsence(result.Absence, artifact)
+			}
 			if grounding.Kind == evidenceGroundingHallucination {
 				return Grading{}, fmt.Errorf("%w: passing assertion %q lacks grounded evidence in the artifact", errInvalidGrading, assertion)
 			}
@@ -490,6 +496,9 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 			result.EvidenceGroundingSpan = grounding.Span
 			result.EvidenceGroundingObservation = grounding.Observation
 		} else {
+			if result.Absence != nil {
+				return Grading{}, fmt.Errorf("%w: failed assertion %q cannot carry an absence claim", errInvalidGrading, assertion)
+			}
 			result.EvidenceGrounding = evidenceGroundingNotApplicable
 			result.EvidenceGroundingScore = 0
 			result.EvidenceGroundingSpan = ""
@@ -522,7 +531,7 @@ func promptDigest(prompt string) string {
 }
 
 func graderSchema() []byte {
-	return []byte(`{"type":"object","properties":{"cases":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"trial":{"type":"integer"},"A_assertion_results":{"$ref":"#/$defs/assertion_results"},"B_assertion_results":{"$ref":"#/$defs/assertion_results"}},"required":["id","trial","A_assertion_results","B_assertion_results"],"additionalProperties":false}}},"required":["cases"],"additionalProperties":false,"$defs":{"assertion_results":{"type":"array","items":{"type":"object","properties":{"text":{"type":"string","minLength":1},"passed":{"type":"boolean"},"evidence":{"type":"string","minLength":1,"pattern":".*[\"“”].*"}},"required":["text","passed","evidence"],"additionalProperties":false}}}}`)
+	return []byte(`{"type":"object","properties":{"cases":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"trial":{"type":"integer"},"A_assertion_results":{"$ref":"#/$defs/assertion_results"},"B_assertion_results":{"$ref":"#/$defs/assertion_results"}},"required":["id","trial","A_assertion_results","B_assertion_results"],"additionalProperties":false}}},"required":["cases"],"additionalProperties":false,"$defs":{"assertion_results":{"type":"array","items":{"type":"object","properties":{"text":{"type":"string","minLength":1},"passed":{"type":"boolean"},"evidence":{"type":"string","minLength":1,"pattern":".*[\"“”].*"},"absence":{"type":"object","properties":{"query":{"type":"string","minLength":1}},"required":["query"],"additionalProperties":false}},"required":["text","passed","evidence"],"additionalProperties":false}}}}`)
 }
 
 func comparatorSchema() []byte {

@@ -11,7 +11,15 @@
         "properties": {
           "text": { "type": "string", "minLength": 1 },
           "passed": { "type": "boolean" },
-          "evidence": { "type": "string", "minLength": 1, "pattern": ".*[\"“”].*" }
+          "evidence": { "type": "string", "minLength": 1, "pattern": ".*[\"“”].*" },
+          "absence": {
+            "type": "object",
+            "properties": {
+              "query": { "type": "string", "minLength": 1 }
+            },
+            "required": ["query"],
+            "additionalProperties": false
+          }
         },
         "required": ["text", "passed", "evidence"],
         "additionalProperties": false

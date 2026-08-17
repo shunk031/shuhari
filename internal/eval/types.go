@@ -64,14 +64,19 @@ type runResult struct {
 	Artifact   string
 }
 
+type AbsenceClaim struct {
+	Query string `json:"query"`
+}
+
 type AssertionResult struct {
-	Text                         string  `json:"text"`
-	Passed                       bool    `json:"passed"`
-	Evidence                     string  `json:"evidence"`
-	EvidenceGrounding            string  `json:"evidence_grounding,omitempty"`
-	EvidenceGroundingScore       float64 `json:"evidence_grounding_score,omitempty"`
-	EvidenceGroundingSpan        string  `json:"evidence_grounding_span,omitempty"`
-	EvidenceGroundingObservation string  `json:"evidence_grounding_observation,omitempty"`
+	Text                         string        `json:"text"`
+	Passed                       bool          `json:"passed"`
+	Evidence                     string        `json:"evidence"`
+	Absence                      *AbsenceClaim `json:"absence,omitempty"`
+	EvidenceGrounding            string        `json:"evidence_grounding,omitempty"`
+	EvidenceGroundingScore       float64       `json:"evidence_grounding_score,omitempty"`
+	EvidenceGroundingSpan        string        `json:"evidence_grounding_span,omitempty"`
+	EvidenceGroundingObservation string        `json:"evidence_grounding_observation,omitempty"`
 }
 
 type GradingSummary struct {
