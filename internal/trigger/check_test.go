@@ -146,19 +146,19 @@ func TestApplyPolicySeparatesMeasurementFromAcceptance(t *testing.T) {
 	t.Parallel()
 
 	suite := Suite{Cases: []Case{{ID: "positive", ShouldTrigger: true}, {ID: "negative", ShouldTrigger: false}}}
-	measurement := Measurement{Results: map[string][]bool{"positive": {true, false, true}, "negative": {false, true, false}}}
+	measurement := Measurement{Applications: map[string][]bool{"positive": {true, false, true}, "negative": {false, true, false}}}
 	reasons := ApplyPolicy(suite, measurement, Policy{Trials: 3})
 	if len(reasons) != 0 {
 		t.Fatalf("reasons = %v, want positive and negative majority pass", reasons)
 	}
 
-	measurement.Results["negative"] = []bool{true, true, false}
+	measurement.Applications["negative"] = []bool{true, true, false}
 	reasons = ApplyPolicy(suite, measurement, Policy{Trials: 3})
 	if len(reasons) != 1 || !strings.Contains(reasons[0], "negative") {
 		t.Fatalf("reasons = %v, want systematic negative over-trigger failure", reasons)
 	}
 
-	measurement.Results["negative"] = []bool{false, true, false}
+	measurement.Applications["negative"] = []bool{false, true, false}
 	reasons = ApplyPolicy(suite, measurement, Policy{Trials: 3, StrictAllTrials: true})
 	if len(reasons) != 2 || !strings.Contains(strings.Join(reasons, " "), "positive") || !strings.Contains(strings.Join(reasons, " "), "negative") {
 		t.Fatalf("strict reasons = %v, want positive miss and negative read failures", reasons)

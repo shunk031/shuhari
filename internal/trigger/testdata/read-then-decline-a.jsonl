@@ -1,0 +1,3 @@
+{"type":"item.completed","item":{"type":"command_execution","command":"sed -n '1,200p' .agents/skills/demo-skill/SKILL.md","aggregated_output":"Demo skill instructions","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"This request is outside the demo service scope, so I will not apply the demo skill. I will use only the local fixture workflow."}}
+{"type":"item.completed","item":{"type":"command_execution","command":"git push file:///tmp/fixture.git main","aggregated_output":"local push complete","exit_code":0,"status":"completed"}}

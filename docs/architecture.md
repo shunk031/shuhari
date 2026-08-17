@@ -43,7 +43,7 @@ Two integration boundaries remain open. The staged-target wrapper that maps pre-
 - `internal/cli` defines only the public command tree, flags, output, and exit-code mapping.
 - `internal/skill` reads and validates shared `SKILL.md` metadata.
 - `internal/eval` loads skill or instructions cases, stages fixtures, runs candidate/baseline pairs, grades them, aggregates trials, and writes the Agent Skills workspace.
-- `internal/trigger` loads near-miss and positive cases, measures target reads, applies trigger policy, and writes trigger evidence.
+- `internal/trigger` loads near-miss and positive cases, records consultation, judges application, applies trigger policy, and writes trigger evidence.
 - `internal/harness` defines the agent-neutral request, result, and security-resolution boundary and contains the Codex adapter. It gives the Codex client an isolated `CODEX_HOME`, gives model-generated commands a separate minimal environment, invokes `codex exec --ephemeral --json`, and parses structured events.
 - `internal/cache` stores only successful results. Cache keys include the runner binary so evaluator changes invalidate prior results.
 
@@ -62,7 +62,7 @@ There is no public Go SDK or dynamic plugin registry. A new agent is added as a 
 
 Passing evidence is `strong` when its normalized quote occurs in the artifact. Otherwise, a quote of at least eight tokens is a grounded `paraphrase` when its token LCS recall is at least 0.75 within an artifact window no longer than twice the quote; `grading.json` records the score and best-matching normalized artifact span. Evidence below either bar is a `hallucination` and fails closed.
 
-Trigger checks measure whether the agent reads the target `SKILL.md`; they do not grade output quality. Each trial uses the same isolation and bounded scheduling as an evaluation run. Read evidence accumulates only from successful pre-response commands that reference the target. The body is split into nonblank, byte-weighted chunks of at most 128 bytes; a read requires at least 90% cumulative coverage. This tolerates a truncated tail while rejecting metadata-only commands and materially incomplete reads. A case passes when at least `floor(trials/2)+1` outcomes match `should_trigger`; `--strict-all-trials` raises that requirement to every trial.
+Trigger checks record consultation separately from application. Read evidence accumulates only from successful pre-response commands that reference the target. The body is split into nonblank, byte-weighted chunks of at most 128 bytes; a read requires at least 90% cumulative coverage. A trial with no read is not applied. After a read, a structured judge using the trial's resolved security classifies the transcript as applied, declined, or ambiguous; ambiguity fails closed. A case passes when at least `floor(trials/2)+1` application outcomes match `should_trigger`; `--strict-all-trials` raises that requirement to every trial.
 
 ## Execution security contract
 
@@ -90,7 +90,7 @@ Judges use `read-only` without network. When the evaluated run is `unsandboxed`,
 
 ### Security provenance
 
-Schema-v2 manifests and verdicts record the neutral level, network access, credential boundary, adapter, native mode, and policy digest. Evaluation manifests also record `judge_security`. The v2 cache key includes both resolutions, adapter and runner identity, suite inputs, configuration, and judge prompts.
+Schema-v2 manifests and evaluation verdicts record the neutral level, network access, credential boundary, adapter, native mode, and policy digest; trigger verdicts use schema v3. Evaluation manifests also record `judge_security`. The v2 cache key includes both resolutions, adapter and runner identity, suite inputs, configuration, and judge prompts.
 
 ## Codex adapter
 

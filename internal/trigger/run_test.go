@@ -74,6 +74,9 @@ func (h *triggerHarness) Run(_ context.Context, request harness.Request) (harnes
 	h.runs++
 	h.requests = append(h.requests, request)
 	h.mu.Unlock()
+	if request.OutputSchema != nil {
+		return harness.Result{Response: `{"verdict":"applied","evidence":"The agent used the skill-specific instructions."}`, Duration: time.Millisecond, Attempts: h.attempts}, nil
+	}
 	return harness.Result{Response: "done", Transcript: []byte("{}\n"), TargetRead: strings.Contains(request.Prompt, "relevant"), Duration: time.Millisecond, Attempts: h.attempts}, nil
 }
 
@@ -157,8 +160,8 @@ func TestRunChecksPositiveAndNegativeCases(t *testing.T) {
 	if summary.Security.SandboxLevel != harness.SandboxIsolated || summary.Security.CredentialBoundary != harness.CredentialBoundaryEnforced {
 		t.Fatalf("trigger credential boundary = %q", summary.Security.CredentialBoundary)
 	}
-	if summary.SchemaVersion != "2" || summary.DecisionRule != "majority" {
-		t.Fatalf("trigger policy provenance = version %q rule %q, want version 2 majority", summary.SchemaVersion, summary.DecisionRule)
+	if summary.SchemaVersion != "3" || summary.DecisionRule != "majority" {
+		t.Fatalf("trigger policy provenance = version %q rule %q, want version 3 majority", summary.SchemaVersion, summary.DecisionRule)
 	}
 	for _, request := range agent.requests {
 		if request.Security != summary.Security {
@@ -208,7 +211,7 @@ func TestRunCacheIncludesSandboxLevel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Cached || agent.runs != 4 {
+	if report.Cached || agent.runs != 6 {
 		t.Fatalf("sandbox change reused stale cache: cached=%v runs=%d", report.Cached, agent.runs)
 	}
 	summaryContents, err := os.ReadFile(filepath.Join(report.Workspace, "trigger.json"))

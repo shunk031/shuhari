@@ -1,0 +1,2 @@
+{"type":"item.completed","item":{"type":"agent_message","text":"I will use the local fixture workflow."}}
+{"type":"item.completed","item":{"type":"command_execution","command":"git push file:///tmp/fixture.git main","aggregated_output":"local push complete","exit_code":0,"status":"completed"}}
