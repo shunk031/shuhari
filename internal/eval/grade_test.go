@@ -432,6 +432,79 @@ func TestBuildGradingAcceptsGroundedParaphrase(t *testing.T) {
 	}
 }
 
+func TestGraderRetryReelicitsOnlyMissingAssertions(t *testing.T) {
+	t.Parallel()
+
+	assertions := []string{"the first requirement is met", "the second requirement is met"}
+	first := judgeOutput{Cases: []judgeEntry{{
+		ID: "case-a", Trial: 1,
+		AAssertionResults: []AssertionResult{
+			{Text: assertions[0], Passed: true, Evidence: `Observed "first artifact".`},
+			{Text: assertions[1], Passed: true, Evidence: `Observed "second artifact".`},
+		},
+		BAssertionResults: []AssertionResult{
+			{Text: assertions[0], Passed: true, Evidence: `Observed "first artifact".`},
+		},
+	}}}
+	second := judgeOutput{Cases: []judgeEntry{{
+		ID: "case-a", Trial: 1,
+		AAssertionResults: []AssertionResult{},
+		BAssertionResults: []AssertionResult{{Text: assertions[1], Passed: true, Evidence: `Observed "second artifact".`}},
+	}}}
+	firstJSON, _ := json.Marshal(first)
+	secondJSON, _ := json.Marshal(second)
+	agent := &provenanceRetryHarness{responses: []string{string(firstJSON), string(secondJSON)}}
+	input := trialJudgeInputs{ID: "case-a", Trial: 1, Grader: judgeInput{
+		ID: "case-a", Trial: 1, Assertions: assertions, A: "first artifact\nsecond artifact", B: "first artifact\nsecond artifact",
+	}}
+
+	entries, _, _, err := runGradersPerTrial(context.Background(), agent, []trialJudgeInputs{input}, Config{Timeout: time.Second}, testJudgeSecurity())
+	if err != nil {
+		t.Fatalf("runGradersPerTrial() rejected focused missing-assertion retry: %v", err)
+	}
+	if len(agent.requests) != 2 {
+		t.Fatalf("judge calls = %d, want initial plus focused retry", len(agent.requests))
+	}
+	payload := agent.requests[1].Prompt[strings.LastIndex(agent.requests[1].Prompt, "\n\n")+2:]
+	var focused []struct {
+		Assertions  []string `json:"assertions"`
+		AAssertions []string `json:"A_assertions"`
+		BAssertions []string `json:"B_assertions"`
+	}
+	if err := json.Unmarshal([]byte(payload), &focused); err != nil {
+		t.Fatalf("decode focused retry input: %v", err)
+	}
+	if len(focused) != 1 || len(focused[0].Assertions) != 1 || focused[0].Assertions[0] != assertions[1] || len(focused[0].AAssertions) != 0 || len(focused[0].BAssertions) != 1 || focused[0].BAssertions[0] != assertions[1] {
+		t.Fatalf("focused retry input = %#v, want only the missing B assertion", focused)
+	}
+	entry := entries[caseTrialKey("case-a", 1)]
+	if len(entry.AAssertionResults) != len(assertions) || len(entry.BAssertionResults) != len(assertions) {
+		t.Fatalf("merged assertion counts = %d/%d, want %d/%d", len(entry.AAssertionResults), len(entry.BAssertionResults), len(assertions), len(assertions))
+	}
+	if entry.AAssertionResults[0].Evidence != `Observed "first artifact".` {
+		t.Fatal("focused retry replaced a previously validated A result")
+	}
+}
+
+func TestGraderRetryFailsClosedWhenFocusedAssertionIsStillMissing(t *testing.T) {
+	t.Parallel()
+
+	assertions := []string{"first", "second"}
+	first := judgeOutput{Cases: []judgeEntry{{
+		ID: "case-a", Trial: 1,
+		AAssertionResults: []AssertionResult{{Text: assertions[0], Passed: true, Evidence: `Observed "first".`}, {Text: assertions[1], Passed: true, Evidence: `Observed "second".`}},
+		BAssertionResults: []AssertionResult{{Text: assertions[0], Passed: true, Evidence: `Observed "first".`}},
+	}}}
+	second := judgeOutput{Cases: []judgeEntry{{ID: "case-a", Trial: 1, AAssertionResults: []AssertionResult{}, BAssertionResults: []AssertionResult{}}}}
+	firstJSON, _ := json.Marshal(first)
+	secondJSON, _ := json.Marshal(second)
+	agent := &provenanceRetryHarness{responses: []string{string(firstJSON), string(secondJSON)}}
+	input := trialJudgeInputs{ID: "case-a", Trial: 1, Grader: judgeInput{ID: "case-a", Trial: 1, Assertions: assertions, A: "first second", B: "first"}}
+	if _, _, _, err := runGradersPerTrial(context.Background(), agent, []trialJudgeInputs{input}, Config{Timeout: time.Second}, testJudgeSecurity()); err == nil {
+		t.Fatal("runGradersPerTrial() accepted a focused retry that remained incomplete")
+	}
+}
+
 func TestBuildGradingRejectsFabricatedParaphrase(t *testing.T) {
 	t.Parallel()
 
