@@ -51,16 +51,16 @@ func TestParseCodexTraceClassifiesIncompleteTransportError(t *testing.T) {
 	}
 }
 
-func TestParseCodexTraceDoesNotRetryCompletedAgentMessage(t *testing.T) {
+func TestParseCodexTraceDoesNotRetryCompletedTurn(t *testing.T) {
 	t.Parallel()
 
-	trace := []byte("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"completed answer\"}}\n{\"type\":\"error\",\"message\":\"connection reset by peer\"}\n")
+	trace := []byte("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"completed answer\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n{\"type\":\"error\",\"message\":\"connection reset by peer\"}\n")
 	_, err := parseCodexTrace(trace, Target{})
 	if err == nil {
 		t.Fatal("parseCodexTrace() accepted an error after a completed message")
 	}
 	if errors.Is(err, ErrTransient) {
-		t.Fatalf("completed agent message was classified retryable: %v", err)
+		t.Fatalf("completed turn was classified retryable: %v", err)
 	}
 }
 
@@ -70,6 +70,7 @@ func TestTransportFailurePatterns(t *testing.T) {
 	for _, message := range []string{
 		"stream disconnected before completion: stream closed before response.completed",
 		"Transport error: network error: error decoding response body",
+		"Reconnecting... 1/5 (stream disconnected before completion: Transport error: network error: error decoding response body)",
 		"connection reset by peer",
 	} {
 		if !transientPattern.MatchString(message) {
@@ -676,6 +677,111 @@ exit 2
 	}
 	if strings.TrimSpace(string(count)) != "1" {
 		t.Fatalf("Codex invocations = %q, want one completed attempt", strings.TrimSpace(string(count)))
+	}
+}
+
+func TestCodexProductionTransportMarkerControls(t *testing.T) {
+	t.Parallel()
+
+	const transportMessage = "Reconnecting... 1/5 (stream disconnected before completion: Transport error: network error: error decoding response body)"
+	tests := []struct {
+		name             string
+		body             string
+		wantResponse     string
+		wantError        bool
+		wantTransient    bool
+		wantAttemptCount int
+		wantInvocations  string
+	}{
+		{
+			name: "retry then success",
+			body: `if test "$count" = 1; then
+	printf '%s\n' '{"type":"item.completed","item":{"id":"progress","type":"agent_message","text":"Working on the task."}}'
+	printf '%s\n' 'Reconnecting... 1/5 (stream disconnected before completion: Transport error: network error: error decoding response body)' >&2
+	exit 2
+fi
+printf '%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"recovered"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+			wantResponse:     "recovered",
+			wantAttemptCount: 2,
+			wantInvocations:  "2",
+		},
+		{
+			name: "retry exhaustion",
+			body: `printf '%s\n' '{"type":"item.completed","item":{"id":"progress","type":"agent_message","text":"Working on the task."}}'
+printf '%s\n' '{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: Transport error: network error: error decoding response body)"}'
+exit 0`,
+			wantError:        true,
+			wantTransient:    true,
+			wantAttemptCount: 3,
+			wantInvocations:  "3",
+		},
+		{
+			name: "completed response is not retried",
+			body: `printf '%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"completed"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+printf '%s\n' '{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: Transport error: network error: error decoding response body)"}'
+exit 0`,
+			wantError:        true,
+			wantAttemptCount: 0,
+			wantInvocations:  "1",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			capture := t.TempDir()
+			script := filepath.Join(t.TempDir(), "fake-codex")
+			contents := fmt.Sprintf(`#!/bin/sh
+count_file=%q/count
+count=0
+if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
+count=$((count + 1))
+printf '%%s\n' "$count" > "$count_file"
+%s
+`, capture, test.body)
+			if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			agent := newCodex(Config{Executable: script})
+			agent.waitBeforeRetry = noRetryWait
+			result, err := agent.Run(context.Background(), Request{WorkDir: t.TempDir(), Prompt: "test", Timeout: time.Second})
+			if test.wantError && err == nil {
+				t.Fatal("Run() succeeded, want error")
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if errors.Is(err, ErrTransient) != test.wantTransient {
+				t.Fatalf("Run() transient = %v, want %v; error=%v", errors.Is(err, ErrTransient), test.wantTransient, err)
+			}
+			attempts := result.Attempts
+			if err != nil {
+				attempts = AttemptsFromError(err)
+			}
+			if attempts.AttemptCount != test.wantAttemptCount {
+				t.Fatalf("attempt count = %d, want %d; evidence=%#v", attempts.AttemptCount, test.wantAttemptCount, attempts)
+			}
+			if test.wantAttemptCount > 1 {
+				for _, attemptErr := range attempts.AttemptErrors {
+					if !strings.Contains(attemptErr.Error, transportMessage) {
+						t.Fatalf("attempt error does not contain production marker: %#v", attemptErr)
+					}
+				}
+			}
+			if result.Response != test.wantResponse {
+				t.Fatalf("response = %q, want %q", result.Response, test.wantResponse)
+			}
+			count, readErr := os.ReadFile(filepath.Join(capture, "count"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if got := strings.TrimSpace(string(count)); got != test.wantInvocations {
+				t.Fatalf("Codex invocations = %q, want %q", got, test.wantInvocations)
+			}
+		})
 	}
 }
 

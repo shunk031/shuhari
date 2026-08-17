@@ -88,6 +88,55 @@ func TestExecuteTaskPersistsTransportRetryEvidence(t *testing.T) {
 	}
 }
 
+func TestExecuteTaskRetriesProductionTransportAfterInterimMessage(t *testing.T) {
+	t.Parallel()
+
+	capture := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := fmt.Sprintf(`#!/bin/sh
+count_file=%q/count
+count=0
+if test -f "$count_file"; then count=$(tr -d '\n' < "$count_file"); fi
+count=$((count + 1))
+printf '%%s\n' "$count" > "$count_file"
+if test "$count" = 1; then
+	printf '%%s\n' '{"type":"item.completed","item":{"id":"progress","type":"agent_message","text":"Working on the task."}}'
+	printf '%%s\n' '{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: Transport error: network error: error decoding response body)"}'
+	exit 0
+fi
+printf '%%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"recovered"}}'
+printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`, capture)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := harness.New("codex", harness.Config{Executable: script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	iteration := t.TempDir()
+	_, err = executeTask(context.Background(), Suite{Kind: harness.TargetSkill, Name: "demo"}, agent, Config{Timeout: 2 * time.Second}, iteration, runTask{Case: Case{ID: "one", Prompt: "task"}, Trial: 1, Variant: variantWithoutSkill})
+	if err != nil {
+		t.Fatalf("executeTask() error = %v", err)
+	}
+	contentsJSON, err := os.ReadFile(filepath.Join(iteration, "eval-one", variantWithoutSkill, "timing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"attempt_count": 2`, "stream disconnected before completion", "error decoding response body"} {
+		if !strings.Contains(string(contentsJSON), want) {
+			t.Fatalf("timing artifact lacks %q: %s", want, contentsJSON)
+		}
+	}
+	count, err := os.ReadFile(filepath.Join(capture, "count"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(count)); got != "2" {
+		t.Fatalf("Codex invocations = %q, want 2", got)
+	}
+}
+
 type exhaustedRetryHarness struct{ fakeHarness }
 
 func (h *exhaustedRetryHarness) Run(_ context.Context, request harness.Request) (harness.Result, error) {
