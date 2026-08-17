@@ -1,0 +1,73 @@
+{
+  "source": "anonymized multi-file grader retry shape derived from a retained run",
+  "assertions": [
+    "The response directly provides the requested function and example.",
+    "The response stays focused on the technical task."
+  ],
+  "A": "--- file: response.md ---\nCreated square.py with a square function and example call.\n\n--- file: square.py ---\ndef square(number):\n    return number * number\n\nprint(square(5))",
+  "B": "--- file: response.md ---\nCreated and verified square.py. Example output: 25.\n\n--- file: square.py ---\ndef square(number):\n    return number * number\n\nprint(square(5))",
+  "first_response": {
+    "cases": [
+      {
+        "id": "case-a",
+        "trial": 2,
+        "A_assertion_results": [
+          {
+            "text": "The response directly provides the requested function and example.",
+            "passed": true,
+            "evidence": "\"square(number)\" is defined in square.py as returning \"number * number\", and the example \"print(square(5))\" is provided."
+          },
+          {
+            "text": "The response stays focused on the technical task.",
+            "passed": true,
+            "evidence": "The response focuses on creating and verifying square.py without unrelated discussion.\""
+          }
+        ],
+        "B_assertion_results": [
+          {
+            "text": "The response directly provides the requested function and example.",
+            "passed": true,
+            "evidence": "square.py defines \"def square(number):\" with \"return number * number\", and includes \"print(square(5))\"."
+          },
+          {
+            "text": "The response stays focused on the technical task.",
+            "passed": true,
+            "evidence": "The response says \"Created and verified square.py.\""
+          }
+        ]
+      }
+    ]
+  },
+  "retry_response": {
+    "cases": [
+      {
+        "id": "case-a",
+        "trial": 2,
+        "A_assertion_results": [
+          {
+            "text": "The response directly provides the requested function and example.",
+            "passed": true,
+            "evidence": "The artifact includes `def square(number): return number * number` in response.md.\""
+          },
+          {
+            "text": "The response stays focused on the technical task.",
+            "passed": true,
+            "evidence": "The response says \"Created square.py with a square function and example call.\""
+          }
+        ],
+        "B_assertion_results": [
+          {
+            "text": "The response directly provides the requested function and example.",
+            "passed": true,
+            "evidence": "square.py defines \"def square(number):\" and includes \"print(square(5))\"."
+          },
+          {
+            "text": "The response stays focused on the technical task.",
+            "passed": true,
+            "evidence": "The response says \"Created and verified square.py.\""
+          }
+        ]
+      }
+    ]
+  }
+}
