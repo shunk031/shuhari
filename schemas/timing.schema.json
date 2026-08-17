@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shunk031/shuhari/schemas/timing.schema.json",
+  "title": "Shuhari run timing artifact",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1" },
+    "total_tokens": { "type": "integer", "minimum": 0 },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "attempt_count": { "type": "integer", "minimum": 1 },
+    "attempt_errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attempt": { "type": "integer", "minimum": 1 },
+          "error": { "type": "string", "minLength": 1 },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "duration_ms": { "type": "integer", "minimum": 1 },
+          "stdout_bytes": { "type": "integer", "minimum": 0 },
+          "stderr_bytes": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["attempt", "error", "timestamp", "duration_ms", "stdout_bytes", "stderr_bytes"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema_version", "total_tokens", "duration_ms", "attempt_count"],
+  "additionalProperties": false
+}

@@ -63,8 +63,12 @@ type Result struct {
 }
 
 type AttemptError struct {
-	Attempt int    `json:"attempt"`
-	Error   string `json:"error"`
+	Attempt     int       `json:"attempt"`
+	Error       string    `json:"error"`
+	Timestamp   time.Time `json:"timestamp"`
+	DurationMS  int64     `json:"duration_ms"`
+	StdoutBytes int64     `json:"stdout_bytes"`
+	StderrBytes int64     `json:"stderr_bytes"`
 }
 
 type AttemptEvidence struct {

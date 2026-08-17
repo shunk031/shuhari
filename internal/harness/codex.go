@@ -265,7 +265,7 @@ func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error)
 		if err := restoreDirectory(snapshot, request.WorkDir); err != nil {
 			return Result{}, err
 		}
-		result, err := h.runOnce(ctx, request)
+		result, observation, err := h.runOnce(ctx, request)
 		if err == nil && strings.TrimSpace(result.Response) != "" {
 			evidence.AttemptCount = attempt
 			result.Attempts = evidence
@@ -275,7 +275,18 @@ func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error)
 			err = fmt.Errorf("%w: codex returned an empty response", ErrTransient)
 		}
 		evidence.AttemptCount = attempt
-		evidence.AttemptErrors = append(evidence.AttemptErrors, AttemptError{Attempt: attempt, Error: err.Error()})
+		durationMS := observation.Duration.Milliseconds()
+		if durationMS < 1 && !observation.Timestamp.IsZero() {
+			durationMS = 1
+		}
+		evidence.AttemptErrors = append(evidence.AttemptErrors, AttemptError{
+			Attempt:     attempt,
+			Error:       err.Error(),
+			Timestamp:   observation.Timestamp,
+			DurationMS:  durationMS,
+			StdoutBytes: observation.StdoutBytes,
+			StderrBytes: observation.StderrBytes,
+		})
 		if !errors.Is(err, ErrTransient) {
 			if attempt > 1 {
 				return Result{}, &RetryError{Cause: err, Attempts: evidence}
@@ -315,31 +326,38 @@ func validateCodexSecurityResolution(resolution SecurityResolution) error {
 	return nil
 }
 
-func (h *codexHarness) runOnce(parent context.Context, request Request) (Result, error) {
+type attemptObservation struct {
+	Timestamp   time.Time
+	Duration    time.Duration
+	StdoutBytes int64
+	StderrBytes int64
+}
+
+func (h *codexHarness) runOnce(parent context.Context, request Request) (Result, attemptObservation, error) {
 	if err := ensureGitRepository(request.WorkDir); err != nil {
-		return Result{}, err
+		return Result{}, attemptObservation{}, err
 	}
 	if request.Target != nil {
 		if err := installCodexTarget(request.WorkDir, *request.Target); err != nil {
-			return Result{}, err
+			return Result{}, attemptObservation{}, err
 		}
 	}
 
 	temporary, err := secureTemporaryDirectory("shuhari-codex-")
 	if err != nil {
-		return Result{}, fmt.Errorf("create codex temporary directory: %w", err)
+		return Result{}, attemptObservation{}, fmt.Errorf("create codex temporary directory: %w", err)
 	}
 	defer os.RemoveAll(temporary)
 	codexHome := filepath.Join(temporary, "codex-home")
 	if err := initializeCodexHome(codexHome); err != nil {
-		return Result{}, err
+		return Result{}, attemptObservation{}, err
 	}
 	if err := writeCodexProfile(codexHome, request); err != nil {
-		return Result{}, err
+		return Result{}, attemptObservation{}, err
 	}
 	before, err := workspaceState(request.WorkDir)
 	if err != nil {
-		return Result{}, err
+		return Result{}, attemptObservation{}, err
 	}
 
 	args := []string{"--disable", "plugins", "exec"}
@@ -361,7 +379,7 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 	if len(request.OutputSchema) > 0 {
 		schemaPath := filepath.Join(temporary, "output-schema.json")
 		if err := os.WriteFile(schemaPath, request.OutputSchema, 0o600); err != nil {
-			return Result{}, fmt.Errorf("write output schema: %w", err)
+			return Result{}, attemptObservation{}, fmt.Errorf("write output schema: %w", err)
 		}
 		args = append(args, "--output-schema", schemaPath)
 	}
@@ -378,12 +396,18 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 	command.Stderr = &stderr
 	err = command.Run()
 	duration := time.Since(started)
+	observation := attemptObservation{
+		Timestamp:   started.UTC(),
+		Duration:    duration,
+		StdoutBytes: int64(stdout.Len()),
+		StderrBytes: int64(stderr.Len()),
+	}
 	completed := codexTraceCompleted(stdout.Bytes())
 	if ctx.Err() == context.DeadlineExceeded {
 		if completed {
-			return Result{}, fmt.Errorf("codex timed out after a completed response")
+			return Result{}, observation, fmt.Errorf("codex timed out after a completed response")
 		}
-		return Result{}, fmt.Errorf("%w: codex timed out after %s", ErrTransient, request.Timeout)
+		return Result{}, observation, fmt.Errorf("%w: codex timed out after %s", ErrTransient, request.Timeout)
 	}
 	if err != nil {
 		message := strings.TrimSpace(stderr.String())
@@ -391,27 +415,27 @@ func (h *codexHarness) runOnce(parent context.Context, request Request) (Result,
 			message = strings.TrimSpace(stdout.String())
 		}
 		if inputTooLargePattern.MatchString(message) {
-			return Result{}, fmt.Errorf("codex failed: %w: %s", err, message)
+			return Result{}, observation, fmt.Errorf("codex failed: %w: %s", err, message)
 		}
 		if !completed && transientPattern.MatchString(message) {
-			return Result{}, fmt.Errorf("%w: %s", ErrTransient, message)
+			return Result{}, observation, fmt.Errorf("%w: %s", ErrTransient, message)
 		}
-		return Result{}, fmt.Errorf("codex failed: %w: %s", err, message)
+		return Result{}, observation, fmt.Errorf("codex failed: %w: %s", err, message)
 	}
 	after, err := workspaceState(request.WorkDir)
 	if err != nil {
-		return Result{}, err
+		return Result{}, observation, err
 	}
 	result, err := parseCodexTrace(stdout.Bytes(), targetOrEmpty(request.Target))
 	if err != nil {
-		return Result{}, err
+		return Result{}, observation, err
 	}
 	result.Transcript = append([]byte(nil), stdout.Bytes()...)
 	result.Duration = duration
 	if statesDiffer(before, after) && !containsAction(result.Actions, ActionFileChange) {
 		result.OrderUnknownActions = append(result.OrderUnknownActions, ActionFileChange)
 	}
-	return result, nil
+	return result, observation, nil
 }
 
 func codexTraceCompleted(trace []byte) bool {

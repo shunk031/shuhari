@@ -702,6 +702,7 @@ func TestCodexProductionTransportMarkerControls(t *testing.T) {
 		{
 			name: "retry then success",
 			body: `if test "$count" = 1; then
+	sleep 0.01
 	printf '%s\n' '{"type":"item.completed","item":{"id":"progress","type":"agent_message","text":"Working on the task."}}'
 	printf '%s\n' 'Reconnecting... 1/5 (stream disconnected before completion: Transport error: network error: error decoding response body)' >&2
 	exit 2
@@ -714,7 +715,9 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 		},
 		{
 			name: "retry exhaustion",
-			body: `printf '%s\n' '{"type":"item.completed","item":{"id":"progress","type":"agent_message","text":"Working on the task."}}'
+			body: `sleep 0.01
+printf '%s\n' '{"type":"item.completed","item":{"id":"progress","type":"agent_message","text":"Working on the task."}}'
+printf '%s\n' 'transport diagnostic' >&2
 printf '%s\n' '{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: Transport error: network error: error decoding response body)"}'
 exit 0`,
 			wantError:        true,
@@ -772,9 +775,24 @@ printf '%%s\n' "$count" > "$count_file"
 				t.Fatalf("attempt count = %d, want %d; evidence=%#v", attempts.AttemptCount, test.wantAttemptCount, attempts)
 			}
 			if test.wantAttemptCount > 1 {
-				for _, attemptErr := range attempts.AttemptErrors {
+				if len(attempts.AttemptErrors) != test.wantAttemptCount-1 && !test.wantError {
+					t.Fatalf("attempt errors = %d, want %d failed attempts before success", len(attempts.AttemptErrors), test.wantAttemptCount-1)
+				}
+				if test.wantError && len(attempts.AttemptErrors) != test.wantAttemptCount {
+					t.Fatalf("attempt errors = %d, want %d exhausted attempts", len(attempts.AttemptErrors), test.wantAttemptCount)
+				}
+				for index, attemptErr := range attempts.AttemptErrors {
 					if !strings.Contains(attemptErr.Error, transportMessage) {
 						t.Fatalf("attempt error does not contain production marker: %#v", attemptErr)
+					}
+					if attemptErr.Attempt != index+1 || attemptErr.Timestamp.IsZero() || attemptErr.DurationMS <= 0 {
+						t.Fatalf("attempt error lacks timing evidence: %#v", attemptErr)
+					}
+					if attemptErr.StdoutBytes <= 0 || attemptErr.StderrBytes <= 0 {
+						t.Fatalf("attempt error lacks captured byte counts: %#v", attemptErr)
+					}
+					if index > 0 && !attemptErr.Timestamp.After(attempts.AttemptErrors[index-1].Timestamp) {
+						t.Fatalf("attempt timestamps are not distinct and ordered: %#v", attempts.AttemptErrors)
 					}
 				}
 			}
