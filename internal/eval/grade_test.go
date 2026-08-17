@@ -871,13 +871,24 @@ func TestGraderSchemaUsesStrictNullableAbsenceField(t *testing.T) {
 		}
 	}
 	var absence struct {
-		Type []string `json:"type"`
+		Type       []string                   `json:"type"`
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
 	}
 	if err := json.Unmarshal(assertionResults.Items.Properties["absence"], &absence); err != nil {
 		t.Fatalf("decode absence schema: %v", err)
 	}
 	if got, want := absence.Type, []string{"object", "null"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("absence type = %v, want %v", got, want)
+	}
+	requiredAbsence := map[string]bool{}
+	for _, property := range absence.Required {
+		requiredAbsence[property] = true
+	}
+	for _, property := range []string{"negated_clause", "query", "rationale"} {
+		if _, ok := absence.Properties[property]; !ok || !requiredAbsence[property] {
+			t.Fatalf("absence schema does not require fallback property %q: properties=%v required=%v", property, absence.Properties, absence.Required)
+		}
 	}
 }
 
@@ -1171,6 +1182,51 @@ func TestJudgeValidationRetryPromptContainsVerbatimFeedback(t *testing.T) {
 	}
 	retryPrompt := agent.requests[1].Prompt
 	for _, want := range []string{"quote-not-found", "copy the relevant evidence", "verbatim", "do not paraphrase"} {
+		if !strings.Contains(strings.ToLower(retryPrompt), strings.ToLower(want)) {
+			t.Fatalf("retry prompt lacks %q: %s", want, retryPrompt)
+		}
+	}
+}
+
+func TestJudgeValidationRetryPromptContainsAbsenceClauseFeedback(t *testing.T) {
+	t.Parallel()
+
+	const (
+		assertion = "The response does not set the commit author."
+		artifact  = "No commit was made."
+	)
+	first := judgeOutput{Cases: []judgeEntry{{
+		ID: "case-a", Trial: 1,
+		AAssertionResults: []AssertionResult{{Text: assertion, Passed: true, Evidence: `Observed "No commit was made."`, Absence: &AbsenceClaim{
+			NegatedClause: "does not configure the commit author", Query: "git config user.name", Rationale: "The command checks author configuration.",
+		}}},
+		BAssertionResults: []AssertionResult{{Text: assertion, Passed: true, Evidence: `Observed "No commit was made."`, Absence: &AbsenceClaim{
+			NegatedClause: "does not configure the commit author", Query: "git config user.name", Rationale: "The command checks author configuration.",
+		}}},
+	}}}
+	second := judgeOutput{Cases: []judgeEntry{{
+		ID: "case-a", Trial: 1,
+		AAssertionResults: []AssertionResult{{Text: assertion, Passed: true, Evidence: `Observed "No commit was made."`, Absence: &AbsenceClaim{
+			NegatedClause: "does not set the commit author", Query: "git config user.name", Rationale: "The command checks author configuration.",
+		}}},
+		BAssertionResults: []AssertionResult{{Text: assertion, Passed: true, Evidence: `Observed "No commit was made."`, Absence: &AbsenceClaim{
+			NegatedClause: "does not set the commit author", Query: "git config user.name", Rationale: "The command checks author configuration.",
+		}}},
+	}}}
+	firstJSON, _ := json.Marshal(first)
+	secondJSON, _ := json.Marshal(second)
+	agent := &provenanceRetryHarness{responses: []string{string(firstJSON), string(secondJSON)}}
+	input := trialJudgeInputs{ID: "case-a", Trial: 1, Grader: judgeInput{
+		ID: "case-a", Trial: 1, Assertions: []string{assertion}, A: artifact, B: artifact,
+	}}
+	if _, _, _, err := runGradersPerTrial(context.Background(), agent, []trialJudgeInputs{input}, Config{Timeout: time.Second}, testJudgeSecurity()); err != nil {
+		t.Fatalf("runGradersPerTrial() rejected anchored absence retry: %v", err)
+	}
+	if len(agent.requests) != 2 {
+		t.Fatalf("judge calls = %d, want initial plus validation retry", len(agent.requests))
+	}
+	retryPrompt := agent.requests[1].Prompt
+	for _, want := range []string{"quote-not-found", "negated_clause", "copy the negated clause exactly", "Validation feedback"} {
 		if !strings.Contains(strings.ToLower(retryPrompt), strings.ToLower(want)) {
 			t.Fatalf("retry prompt lacks %q: %s", want, retryPrompt)
 		}

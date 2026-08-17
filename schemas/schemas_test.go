@@ -74,3 +74,50 @@ func TestTriggerApplicationSchemaRejectsContradictoryVerdict(t *testing.T) {
 		t.Fatal("Validate() accepted a declined verdict marked as applied")
 	}
 }
+
+func TestAbsenceSchemasAcceptDeclaredPatternsAndFallbackClaims(t *testing.T) {
+	t.Parallel()
+
+	evals := map[string]any{
+		"skill_name": "demo",
+		"evals": []any{map[string]any{
+			"id":              "absence",
+			"prompt":          "check the workspace",
+			"expected_output": "the check completes",
+			"assertions": []any{map[string]any{
+				"text":               "The response does not set the commit author.",
+				"forbidden_patterns": []any{"git config user.name"},
+			}},
+		}},
+	}
+	if err := Validate("evals", evals); err != nil {
+		t.Fatalf("Validate(evals) rejected declared absence patterns: %v", err)
+	}
+
+	grading := map[string]any{
+		"assertion_results": []any{
+			map[string]any{
+				"text":     "The response does not set the commit author.",
+				"passed":   true,
+				"evidence": `Observed "No commit was made."`,
+				"absence": map[string]any{
+					"negated_clause": "does not set the commit author",
+					"query":          "git config user.name",
+					"rationale":      "The query checks author configuration.",
+				},
+			},
+			map[string]any{
+				"text":     "The response does not set the commit author.",
+				"passed":   true,
+				"evidence": `Observed "No commit was made."`,
+				"absence": map[string]any{
+					"forbidden_patterns": []any{"git config user.name"},
+				},
+			},
+		},
+		"summary": map[string]any{"passed": 2, "failed": 0, "total": 2, "pass_rate": 1.0},
+	}
+	if err := Validate("grading", grading); err != nil {
+		t.Fatalf("Validate(grading) rejected fallback/pattern absence receipts: %v", err)
+	}
+}

@@ -36,6 +36,55 @@ func TestLoadSkillSuite(t *testing.T) {
 	}
 }
 
+func TestLoadSkillSuiteLoadsDeclaredForbiddenPatterns(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "demo")
+	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
+	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{
+  "skill_name": "demo",
+  "evals": [{
+    "id": "absence",
+    "prompt": "check the workspace",
+    "expected_output": "the check completes",
+    "assertions": [{
+      "text": "The response does not set the commit author.",
+      "forbidden_patterns": ["git config user.name", "git config user.email"]
+    }]
+  }]
+}`)
+
+	suite, err := LoadSkillSuite(root)
+	if err != nil {
+		t.Fatalf("LoadSkillSuite() error = %v", err)
+	}
+	assertion := "The response does not set the commit author."
+	patterns := suite.Cases[0].ForbiddenPatterns[assertion]
+	if len(patterns) != 2 || patterns[0] != "git config user.name" || patterns[1] != "git config user.email" {
+		t.Fatalf("forbidden patterns = %#v", patterns)
+	}
+}
+
+func TestLoadSkillSuiteRejectsForbiddenPatternsOnPositiveAssertion(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "demo")
+	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
+	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{
+  "skill_name": "demo",
+  "evals": [{
+    "id": "positive",
+    "prompt": "check the workspace",
+    "expected_output": "the check completes",
+    "assertions": [{"text": "The response sets the commit author.", "forbidden_patterns": ["git config user.name"]}]
+  }]
+}`)
+
+	if _, err := LoadSkillSuite(root); err == nil {
+		t.Fatal("LoadSkillSuite() accepted forbidden patterns on a positive assertion")
+	}
+}
+
 func TestLoadSkillSuiteRejectsEscapingFixture(t *testing.T) {
 	t.Parallel()
 

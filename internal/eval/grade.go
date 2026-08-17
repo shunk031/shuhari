@@ -100,22 +100,24 @@ func (e *judgeRetryError) Error() string { return e.cause.Error() }
 func (e *judgeRetryError) Unwrap() error { return e.cause }
 
 type trialJudgeInputs struct {
-	ID         string
-	Trial      int
-	Grader     judgeInput
-	Comparator comparatorInput
+	ID                string
+	Trial             int
+	ForbiddenPatterns map[string][]string
+	Grader            judgeInput
+	Comparator        comparatorInput
 }
 
 type focusedGraderInput struct {
-	ID          string   `json:"id"`
-	Trial       int      `json:"trial"`
-	Assertions  []string `json:"assertions"`
-	A           string   `json:"A"`
-	B           string   `json:"B"`
-	AResponse   string   `json:"A_response"`
-	BResponse   string   `json:"B_response"`
-	AAssertions []string `json:"A_assertions"`
-	BAssertions []string `json:"B_assertions"`
+	ID                string              `json:"id"`
+	Trial             int                 `json:"trial"`
+	Assertions        []string            `json:"assertions"`
+	A                 string              `json:"A"`
+	B                 string              `json:"B"`
+	AResponse         string              `json:"A_response"`
+	BResponse         string              `json:"B_response"`
+	AAssertions       []string            `json:"A_assertions"`
+	BAssertions       []string            `json:"B_assertions"`
+	ForbiddenPatterns map[string][]string `json:"-"`
 }
 
 type judgeRetryRequest struct {
@@ -147,10 +149,11 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 			outputs := map[string]string{withVariant: with.Artifact, withoutVariant: without.Artifact}
 			responses := map[string]string{withVariant: with.Agent.Response, withoutVariant: without.Agent.Response}
 			trialInputs = append(trialInputs, trialJudgeInputs{
-				ID:         item.ID,
-				Trial:      trial,
-				Grader:     judgeInput{ID: item.ID, Trial: trial, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B], AResponse: responses[mapping.A], BResponse: responses[mapping.B]},
-				Comparator: comparatorInput{ID: item.ID, Trial: trial, Prompt: item.Prompt, ExpectedOutput: item.ExpectedOutput, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B], AResponse: responses[mapping.A], BResponse: responses[mapping.B]},
+				ID:                item.ID,
+				Trial:             trial,
+				ForbiddenPatterns: item.ForbiddenPatterns,
+				Grader:            judgeInput{ID: item.ID, Trial: trial, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B], AResponse: responses[mapping.A], BResponse: responses[mapping.B]},
+				Comparator:        comparatorInput{ID: item.ID, Trial: trial, Prompt: item.Prompt, ExpectedOutput: item.ExpectedOutput, Assertions: item.effectiveAssertions(), A: outputs[mapping.A], B: outputs[mapping.B], AResponse: responses[mapping.A], BResponse: responses[mapping.B]},
 			})
 		}
 	}
@@ -264,8 +267,8 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 					if !ok {
 						continue
 					}
-					entry.AAssertionResults = preserveValidatedAssertionResults(item.Grader.Assertions, previous.AAssertionResults, entry.AAssertionResults, item.Grader.A)
-					entry.BAssertionResults = preserveValidatedAssertionResults(item.Grader.Assertions, previous.BAssertionResults, entry.BAssertionResults, item.Grader.B)
+					entry.AAssertionResults = preserveValidatedAssertionResults(item.Grader.Assertions, item.ForbiddenPatterns, previous.AAssertionResults, entry.AAssertionResults, item.Grader.A)
+					entry.BAssertionResults = preserveValidatedAssertionResults(item.Grader.Assertions, item.ForbiddenPatterns, previous.BAssertionResults, entry.BAssertionResults, item.Grader.B)
 				}
 			}
 			var err error
@@ -281,14 +284,15 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 					ID: item.Grader.ID, Trial: item.Grader.Trial, Assertions: mergeAssertionsInOrder(item.Grader.Assertions, missingA, missingB),
 					A: item.Grader.A, B: item.Grader.B, AResponse: item.Grader.AResponse, BResponse: item.Grader.BResponse,
 					AAssertions: missingA, BAssertions: missingB,
+					ForbiddenPatterns: item.ForbiddenPatterns,
 				}
 				return fmt.Errorf("grader omitted required assertions for A=%v B=%v", missingA, missingB)
 			}
 			entry := trialEntries[caseTrialKey(item.ID, item.Trial)]
-			if _, err := buildGrading(item.Grader.Assertions, entry.AAssertionResults, item.Grader.A); err != nil {
+			if _, err := buildGradingWithForbiddenPatterns(item.Grader.Assertions, item.ForbiddenPatterns, entry.AAssertionResults, item.Grader.A); err != nil {
 				return fmt.Errorf("validate A evidence: %w", err)
 			}
-			if _, err := buildGrading(item.Grader.Assertions, entry.BAssertionResults, item.Grader.B); err != nil {
+			if _, err := buildGradingWithForbiddenPatterns(item.Grader.Assertions, item.ForbiddenPatterns, entry.BAssertionResults, item.Grader.B); err != nil {
 				return fmt.Errorf("validate B evidence: %w", err)
 			}
 			return nil
@@ -298,7 +302,7 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 			}
 			focusedRetry = true
 			return judgeRetryRequest{
-				Instructions: strings.TrimSpace(graderPrompt) + "\n\nThe previous response failed validation. Return results only for the assertions listed in A_assertions and B_assertions; leave the other side's result array empty. Do not repeat any already validated assertion.\nValidation feedback: " + validationErr.Error() + "\nFor every passing present or positive claim, copy the relevant evidence verbatim from the artifact. Do not paraphrase, rename variables, or substitute literal paths or values.\n",
+				Instructions: strings.TrimSpace(graderPrompt) + "\n\nThe previous response failed validation. Return results only for the assertions listed in A_assertions and B_assertions; leave the other side's result array empty. Do not repeat any already validated assertion.\nValidation feedback: " + validationErr.Error() + "\nFor every passing present or positive claim, copy the relevant evidence verbatim from the artifact. Do not paraphrase, rename variables, or substitute literal paths or values. For every fallback absence claim, copy negated_clause verbatim from the assertion; do not paraphrase it.\n",
 				Input:        []focusedGraderInput{*focused},
 			}, true
 		})
@@ -318,7 +322,7 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 	return entries, string(encoded), retries, nil
 }
 
-func preserveValidatedAssertionResults(expected []string, previous, current []AssertionResult, artifact string) []AssertionResult {
+func preserveValidatedAssertionResults(expected []string, forbiddenPatterns map[string][]string, previous, current []AssertionResult, artifact string) []AssertionResult {
 	if len(previous) != len(expected) || len(current) != len(expected) {
 		return current
 	}
@@ -343,7 +347,7 @@ func preserveValidatedAssertionResults(expected []string, previous, current []As
 		if !previousOK || !currentOK {
 			return current
 		}
-		if _, err := buildGrading([]string{assertion}, []AssertionResult{previousResult}, artifact); err == nil {
+		if _, err := buildGradingWithForbiddenPatterns([]string{assertion}, forbiddenPatterns, []AssertionResult{previousResult}, artifact); err == nil {
 			merged[currentIndex] = previousResult
 		}
 	}
@@ -392,10 +396,10 @@ func validateFocusedGraderResponse(output judgeOutput, focused *focusedGraderInp
 	if len(entry.AAssertionResults) != len(focused.AAssertions) || len(entry.BAssertionResults) != len(focused.BAssertions) {
 		return fmt.Errorf("focused grader retry returned A=%d B=%d assertions, want A=%d B=%d", len(entry.AAssertionResults), len(entry.BAssertionResults), len(focused.AAssertions), len(focused.BAssertions))
 	}
-	if _, err := buildGrading(focused.AAssertions, entry.AAssertionResults, input.A); err != nil {
+	if _, err := buildGradingWithForbiddenPatterns(focused.AAssertions, focused.ForbiddenPatterns, entry.AAssertionResults, input.A); err != nil {
 		return fmt.Errorf("validate focused A evidence: %w", err)
 	}
-	if _, err := buildGrading(focused.BAssertions, entry.BAssertionResults, input.B); err != nil {
+	if _, err := buildGradingWithForbiddenPatterns(focused.BAssertions, focused.ForbiddenPatterns, entry.BAssertionResults, input.B); err != nil {
 		return fmt.Errorf("validate focused B evidence: %w", err)
 	}
 	prior, ok := previous[caseTrialKey(focused.ID, focused.Trial)]
@@ -403,10 +407,10 @@ func validateFocusedGraderResponse(output judgeOutput, focused *focusedGraderInp
 		return fmt.Errorf("focused grader retry has no prior case %s", caseTrialKey(focused.ID, focused.Trial))
 	}
 	merged := judgeEntry{ID: prior.ID, Trial: prior.Trial, AAssertionResults: append(append([]AssertionResult{}, prior.AAssertionResults...), entry.AAssertionResults...), BAssertionResults: append(append([]AssertionResult{}, prior.BAssertionResults...), entry.BAssertionResults...)}
-	if _, err := buildGrading(input.Assertions, merged.AAssertionResults, input.A); err != nil {
+	if _, err := buildGradingWithForbiddenPatterns(input.Assertions, focused.ForbiddenPatterns, merged.AAssertionResults, input.A); err != nil {
 		return fmt.Errorf("validate merged A evidence: %w", err)
 	}
-	if _, err := buildGrading(input.Assertions, merged.BAssertionResults, input.B); err != nil {
+	if _, err := buildGradingWithForbiddenPatterns(input.Assertions, focused.ForbiddenPatterns, merged.BAssertionResults, input.B); err != nil {
 		return fmt.Errorf("validate merged B evidence: %w", err)
 	}
 	*destination = map[string]judgeEntry{caseTrialKey(merged.ID, merged.Trial): merged}
@@ -493,7 +497,7 @@ func runValidatedStructuredJudgeWithRetry(ctx context.Context, agent harness.Har
 }
 
 func validationRetryInstructions(instructions string, validationErr error) string {
-	return strings.TrimSpace(instructions) + "\n\nThe previous response failed validation. Return a corrected response for the original input.\nValidation feedback: " + validationErr.Error() + "\nFor every passing present or positive claim, copy the relevant evidence verbatim from the artifact. Do not paraphrase, rename variables, or substitute literal paths or values.\n"
+	return strings.TrimSpace(instructions) + "\n\nThe previous response failed validation. Return a corrected response for the original input.\nValidation feedback: " + validationErr.Error() + "\nFor every passing present or positive claim, copy the relevant evidence verbatim from the artifact. Do not paraphrase, rename variables, or substitute literal paths or values. For every fallback absence claim, copy negated_clause verbatim from the assertion; do not paraphrase it.\n"
 }
 
 func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, security harness.SecurityResolution) (string, harness.AttemptEvidence, error) {
@@ -594,6 +598,10 @@ func validateComparatorEntries(output comparatorOutput, inputs []comparatorInput
 }
 
 func buildGrading(expected []string, actual []AssertionResult, artifact string) (Grading, error) {
+	return buildGradingWithForbiddenPatterns(expected, nil, actual, artifact)
+}
+
+func buildGradingWithForbiddenPatterns(expected []string, forbiddenPatterns map[string][]string, actual []AssertionResult, artifact string) (Grading, error) {
 	if len(expected) != len(actual) {
 		return Grading{}, fmt.Errorf("%w: grader returned %d assertions, want %d", errInvalidGrading, len(actual), len(expected))
 	}
@@ -616,19 +624,32 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 		}
 		if result.Passed {
 			grounding := groundEvidence(result.Evidence, artifact)
-			if result.Absence != nil {
-				if !supportsAbsenceClaim(assertion, result.Absence.Query) {
-					return Grading{}, fmt.Errorf("%w: absence claim does not match a negated assertion %q", errInvalidGrading, assertion)
+			if patterns := forbiddenPatterns[assertion]; len(patterns) > 0 {
+				// Eval-declared patterns are authoritative and mechanical. Do not
+				// let a judge-selected query change which forbidden operations are
+				// searched or recorded in the grading receipt.
+				result.Absence = &AbsenceClaim{ForbiddenPatterns: append([]string(nil), patterns...)}
+				grounding = groundDeclaredAbsence(patterns, artifact)
+				if grounding.Kind == evidenceGroundingContradiction {
+					// The artifact is authoritative for negative claims. A matching
+					// forbidden pattern deterministically disproves the judge's pass.
+					result.Passed = false
 				}
-				if requiresVerbatimPositiveEvidence(assertion, result.Absence.Query) && grounding.Kind != evidenceGroundingStrong {
+			} else if result.Absence != nil {
+				if err := validateFallbackAbsenceClaim(assertion, result.Absence); err != nil {
+					return Grading{}, err
+				}
+				if requiresVerbatimPositiveEvidence(assertion, result.Absence.NegatedClause) && grounding.Kind != evidenceGroundingStrong {
 					return Grading{}, invalidPositiveEvidenceError(assertion, grounding)
 				}
 				grounding = groundAbsence(result.Absence, artifact)
 				if grounding.Kind == evidenceGroundingContradiction {
 					// The artifact is authoritative for negative claims. A matching
-					// absence query deterministically disproves the judge's pass.
+					// query deterministically disproves the judge's pass.
 					result.Passed = false
 				}
+			} else if absenceAssertionCuePattern.MatchString(assertion) {
+				return Grading{}, fmt.Errorf("%w: negative assertion %q requires an absence declaration", errInvalidGrading, assertion)
 			}
 			if result.Passed && result.Absence == nil && grounding.Kind != evidenceGroundingStrong {
 				return Grading{}, invalidPositiveEvidenceError(assertion, grounding)
@@ -659,13 +680,33 @@ func buildGrading(expected []string, actual []AssertionResult, artifact string) 
 	return Grading{AssertionResults: ordered, Summary: summary}, nil
 }
 
-func requiresVerbatimPositiveEvidence(assertion, absenceQuery string) bool {
-	normalizedQuery := strings.ToLower(normalizeEvidenceText(absenceQuery))
+func validateFallbackAbsenceClaim(assertion string, claim *AbsenceClaim) error {
+	if claim == nil {
+		return fmt.Errorf("%w: absence claim is required", errInvalidGrading)
+	}
+	if !absenceAssertionCuePattern.MatchString(assertion) {
+		return fmt.Errorf("%w: absence claim requires a negated assertion %q", errInvalidGrading, assertion)
+	}
+	if strings.TrimSpace(claim.NegatedClause) == "" {
+		return fmt.Errorf("%w: absence claim negated_clause must be nonblank", errInvalidGrading)
+	}
+	if !strings.Contains(assertion, claim.NegatedClause) {
+		return fmt.Errorf("%w: absence claim negated_clause %q is not a verbatim substring of assertion %q (quote-not-found: copy the negated clause exactly)", errInvalidGrading, claim.NegatedClause, assertion)
+	}
+	if strings.TrimSpace(claim.Query) == "" {
+		return fmt.Errorf("%w: absence claim query must be nonblank", errInvalidGrading)
+	}
+	if strings.TrimSpace(claim.Rationale) == "" {
+		return fmt.Errorf("%w: absence claim rationale must be nonblank", errInvalidGrading)
+	}
+	return nil
+}
+
+func requiresVerbatimPositiveEvidence(assertion, negatedClause string) bool {
+	normalizedClause := strings.ToLower(normalizeEvidenceText(negatedClause))
 	for _, clause := range absenceClauseBoundaryPattern.Split(strings.ToLower(normalizeEvidenceText(assertion)), -1) {
-		if absenceAssertionCuePattern.MatchString(clause) {
-			if strings.Contains(clause, normalizedQuery) || absenceQueryMatchesNegatedAction(clause, normalizedQuery) {
-				continue
-			}
+		if absenceAssertionCuePattern.MatchString(clause) && strings.Contains(clause, normalizedClause) {
+			continue
 		}
 		return true
 	}
@@ -694,7 +735,52 @@ func promptDigest(prompt string) string {
 }
 
 func graderSchema() []byte {
-	return []byte(`{"type":"object","properties":{"cases":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"trial":{"type":"integer"},"A_assertion_results":{"$ref":"#/$defs/assertion_results"},"B_assertion_results":{"$ref":"#/$defs/assertion_results"}},"required":["id","trial","A_assertion_results","B_assertion_results"],"additionalProperties":false}}},"required":["cases"],"additionalProperties":false,"$defs":{"assertion_results":{"type":"array","items":{"type":"object","properties":{"text":{"type":"string","minLength":1},"passed":{"type":"boolean"},"evidence":{"type":"string","minLength":1,"pattern":".*[\"“”].*"},"absence":{"type":["object","null"],"properties":{"query":{"type":"string","minLength":1}},"required":["query"],"additionalProperties":false}},"required":["text","passed","evidence","absence"],"additionalProperties":false}}}}`)
+	return []byte(`{
+  "type": "object",
+  "properties": {
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "trial": {"type": "integer"},
+          "A_assertion_results": {"$ref": "#/$defs/assertion_results"},
+          "B_assertion_results": {"$ref": "#/$defs/assertion_results"}
+        },
+        "required": ["id", "trial", "A_assertion_results", "B_assertion_results"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["cases"],
+  "additionalProperties": false,
+  "$defs": {
+    "assertion_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text": {"type": "string", "minLength": 1},
+          "passed": {"type": "boolean"},
+          "evidence": {"type": "string", "minLength": 1, "pattern": ".*[\"“”].*"},
+          "absence": {
+            "type": ["object", "null"],
+            "properties": {
+              "negated_clause": {"type": "string", "minLength": 1},
+              "query": {"type": "string", "minLength": 1},
+              "rationale": {"type": "string", "minLength": 1}
+            },
+            "required": ["negated_clause", "query", "rationale"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["text", "passed", "evidence", "absence"],
+        "additionalProperties": false
+      }
+    }
+  }
+}`)
 }
 
 func comparatorSchema() []byte {
