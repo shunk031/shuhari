@@ -99,7 +99,10 @@ func TestAbsenceSchemasAcceptDeclaredPatternsAndFallbackClaims(t *testing.T) {
 			map[string]any{
 				"text":     "The response does not set the commit author.",
 				"passed":   true,
-				"evidence": `Observed "No commit was made."`,
+				"evidence": "No commit was made.",
+				"evidence_references": []any{map[string]any{
+					"path": "response.md", "start_line": 1, "end_line": 1,
+				}},
 				"absence": map[string]any{
 					"negated_clause": "does not set the commit author",
 					"query":          "git config user.name",

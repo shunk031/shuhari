@@ -55,12 +55,12 @@ There is no public Go SDK or dynamic plugin registry. A new agent is added as a 
 2. The engine resolves run and judge security, then completes the adapter preflight before creating a workspace.
 3. The engine creates a new `iteration-N` directory and schedules a bounded number of candidate/baseline runs.
 4. Every run receives a fresh temporary Git repository and isolated agent home. Fixtures are copied into the repository; evaluator-only fields such as `expected_output` are not included in the run prompt. Produced files and the final response are copied into the durable workspace.
-5. A structured grader receives blinded A/B artifacts. Its response is checked for complete case, trial, assertion, and quoted-evidence coverage before grades are accepted.
-6. A separate blind comparator receives the original task and both artifacts. Its unblinded mapping and decision are stored independently from assertion grades.
+5. A per-side judge agent receives only a blind label and assertions, then reads one copied artifact tree in a read-only workspace. Its positional file/line evidence is checked against the same files before grades are accepted.
+6. A separate blind comparator remains prompt-rendered and receives the original task and both artifacts. Its unblinded mapping and decision are stored independently from assertion grades.
 7. Candidate assertion results are aggregated per case. The default is majority; `--strict-all-trials` requires all trials. Required actions always require every trial. The comparison also requires candidate wins to be at least baseline wins.
 8. `benchmark.json` records candidate-minus-baseline differences and assertion audit categories. A passing result enters the cache; a failure retains evidence but never enters the cache.
 
-Passing evidence is `strong` when its normalized quote occurs in the artifact. Otherwise, a quote of at least eight tokens is a grounded `paraphrase` when its token LCS recall is at least 0.75 within an artifact window no longer than twice the quote; `grading.json` records the score and best-matching normalized artifact span. Evidence below either bar is a `hallucination` and fails closed.
+Passing positive evidence is `strong` only when the judge's excerpt is byte-for-byte equal to the cited inclusive file/line span in the blinded artifact workspace. Missing, altered, paraphrased, normalized, or nonexistent spans fail closed. Negative assertions use eval-declared forbidden patterns first, then the clause-anchored absence query fallback; a match is a side-specific contradiction.
 
 Trigger checks record consultation separately from application. Read evidence accumulates only from successful pre-response commands that reference the target. The body is split into nonblank, byte-weighted chunks of at most 128 bytes; a read requires at least 90% cumulative coverage. A trial with no read is not applied. After a read, a structured judge using the trial's resolved security classifies the transcript as applied, declined, or ambiguous; ambiguity fails closed. A case passes when at least `floor(trials/2)+1` application outcomes match `should_trigger`; `--strict-all-trials` raises that requirement to every trial.
 
@@ -86,7 +86,7 @@ All modes strip known GitHub credential variables from child commands. This is o
 
 An explicit `--sandbox` wins over `SHUHARI_SANDBOX`. `ResolveSecurity` returns one digest-bearing adapter mapping; the engine validates and reuses it for runs, artifacts, and cache keys. `Probe` checks the native sandbox before workspace creation. Unsupported mappings or hosts return `ErrUnsupportedSecurityPolicy`; Shuhari never degrades.
 
-Judges use `read-only` without network. When the evaluated run is `unsandboxed`, the judge also uses acknowledged `unsandboxed` with network because a protected judge cannot run on that host.
+Judges always use `read-only` without network. Their workspace contains only a copied artifact tree for one blinded side; artifacts are not rendered into the judge prompt. The comparator remains prompt-rendered because it compares two outputs rather than grounding a positive claim.
 
 ### Security provenance
 

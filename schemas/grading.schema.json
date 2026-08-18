@@ -11,7 +11,20 @@
         "properties": {
           "text": { "type": "string", "minLength": 1 },
           "passed": { "type": "boolean" },
-          "evidence": { "type": "string", "minLength": 1, "pattern": ".*[\"“”].*" },
+          "evidence": { "type": "string", "minLength": 1 },
+          "evidence_references": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": { "type": "string", "minLength": 1 },
+                "start_line": { "type": "integer", "minimum": 1 },
+                "end_line": { "type": "integer", "minimum": 1 }
+              },
+              "required": ["path", "start_line", "end_line"],
+              "additionalProperties": false
+            }
+          },
           "absence": {
             "oneOf": [
               {
@@ -37,7 +50,11 @@
                 "additionalProperties": false
               }
             ]
-          }
+          },
+          "evidence_grounding": { "type": "string" },
+          "evidence_grounding_score": { "type": "number", "minimum": 0, "maximum": 1 },
+          "evidence_grounding_span": { "type": "string" },
+          "evidence_grounding_observation": { "type": "string" }
         },
         "required": ["text", "passed", "evidence"],
         "additionalProperties": false

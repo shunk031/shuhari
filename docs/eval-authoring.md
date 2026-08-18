@@ -18,4 +18,4 @@ Write cases that isolate one observable behavior and provide every input they ne
 
 ## Evidence
 
-- Judges cite what they read: formatting-normalized verbatim evidence is `strong`, grounded paraphrases are accepted with an annotation, and ungrounded evidence fails the run; see the [grading contract](architecture.md#evaluation-flow).
+- Judges cite what they read with relative file paths and inclusive line spans. Positive evidence must copy the cited bytes exactly; absence claims use eval-declared forbidden patterns or the structured fallback described in the [grading contract](grading-contract.md).
