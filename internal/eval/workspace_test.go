@@ -324,7 +324,7 @@ func TestRenderArtifactBoundsAggregateInlineTextAndKeepsResponse(t *testing.T) {
 	}
 }
 
-func TestPackfileDominatedOutputKeepsJudgePromptSmall(t *testing.T) {
+func TestPackfileDominatedOutputKeepsAgentJudgePromptSmall(t *testing.T) {
 	t.Parallel()
 
 	outputDir := t.TempDir()
@@ -338,23 +338,15 @@ func TestPackfileDominatedOutputKeepsJudgePromptSmall(t *testing.T) {
 	}
 	mustWrite(t, filepath.Join(outputDir, "result.txt"), "done\n")
 
-	artifact, err := renderArtifact(outputDir)
+	_, err := renderArtifact(outputDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyArtifact := fmt.Sprintf("--- file: repository/.git/objects/pack/pack-a.pack (%d bytes) ---\n%s", len(pack), string(pack))
-	before, err := structuredJudgePrompt(graderPrompt, []judgeInput{{ID: "large", Trial: 1, Assertions: []string{"correct"}, A: legacyArtifact, B: "baseline"}})
+	prompt, err := structuredJudgePrompt(graderPrompt, []agentJudgeInput{{ID: "large", Trial: 1, Side: "A", Assertions: []string{"correct"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	after, err := structuredJudgePrompt(graderPrompt, []judgeInput{{ID: "large", Trial: 1, Assertions: []string{"correct"}, A: artifact, B: "baseline"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(before) <= 1_048_576 {
-		t.Fatalf("legacy-shaped prompt = %d bytes, want over the agent input limit", len(before))
-	}
-	if len(after) >= 10_000 || len(after)*100 >= len(before) {
-		t.Fatalf("metadata prompt did not collapse enough: before=%d after=%d", len(before), len(after))
+	if len(prompt) >= 10_000 || strings.Contains(prompt, "pack-a.pack") || strings.Contains(prompt, "done") {
+		t.Fatalf("agent judge prompt rendered artifact content: %d bytes", len(prompt))
 	}
 }

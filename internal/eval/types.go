@@ -73,14 +73,23 @@ type AbsenceClaim struct {
 }
 
 type AssertionResult struct {
-	Text                         string        `json:"text"`
-	Passed                       bool          `json:"passed"`
-	Evidence                     string        `json:"evidence"`
-	Absence                      *AbsenceClaim `json:"absence,omitempty"`
-	EvidenceGrounding            string        `json:"evidence_grounding,omitempty"`
-	EvidenceGroundingScore       float64       `json:"evidence_grounding_score,omitempty"`
-	EvidenceGroundingSpan        string        `json:"evidence_grounding_span,omitempty"`
-	EvidenceGroundingObservation string        `json:"evidence_grounding_observation,omitempty"`
+	Text                         string              `json:"text"`
+	Passed                       bool                `json:"passed"`
+	Evidence                     string              `json:"evidence"`
+	EvidenceReferences           []EvidenceReference `json:"evidence_references,omitempty"`
+	Absence                      *AbsenceClaim       `json:"absence,omitempty"`
+	EvidenceGrounding            string              `json:"evidence_grounding,omitempty"`
+	EvidenceGroundingScore       float64             `json:"evidence_grounding_score,omitempty"`
+	EvidenceGroundingSpan        string              `json:"evidence_grounding_span,omitempty"`
+	EvidenceGroundingObservation string              `json:"evidence_grounding_observation,omitempty"`
+}
+
+// EvidenceReference identifies the exact source lines copied into Evidence.
+// Paths are relative to the blinded artifact workspace exposed to the judge.
+type EvidenceReference struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
 }
 
 type GradingSummary struct {

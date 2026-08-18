@@ -108,13 +108,61 @@ func (h *fakeHarness) Run(_ context.Context, request harness.Request) (harness.R
 		if strings.Contains(string(request.OutputSchema), `"preferred"`) {
 			return harness.Result{Response: h.compareResponse, Duration: time.Millisecond, Usage: harness.Usage{InputTokens: 1}}, nil
 		}
-		return harness.Result{Response: h.judgeResponse, Duration: time.Millisecond, Usage: harness.Usage{InputTokens: 1}}, nil
+		response, err := fakeAgentJudgeResponse(request, h.judgeResponse)
+		if err != nil {
+			return harness.Result{}, err
+		}
+		return harness.Result{Response: response, Duration: time.Millisecond, Usage: harness.Usage{InputTokens: 1}}, nil
 	}
 	response := "baseline output"
 	if request.Target != nil {
 		response = "candidate output"
 	}
 	return harness.Result{Response: response, Transcript: []byte("{}\n"), Duration: 10 * time.Millisecond, Usage: harness.Usage{InputTokens: 10, OutputTokens: 5}, Attempts: h.runAttempts, Actions: []harness.Action{harness.ActionWebSearch, harness.ActionFileChange}}, nil
+}
+
+func fakeAgentJudgeResponse(request harness.Request, legacyResponse string) (string, error) {
+	if strings.Contains(legacyResponse, `"assertion_results"`) {
+		return legacyResponse, nil
+	}
+	var legacy judgeOutput
+	if err := json.Unmarshal([]byte(legacyResponse), &legacy); err != nil {
+		return legacyResponse, nil
+	}
+	payload := request.Prompt[strings.LastIndex(request.Prompt, "\n\n")+2:]
+	var inputs []agentJudgeInput
+	if err := json.Unmarshal([]byte(payload), &inputs); err != nil {
+		return "", err
+	}
+	contents, err := os.ReadFile(filepath.Join(request.WorkDir, "response.md"))
+	if err != nil {
+		return "", err
+	}
+	line := strings.TrimSuffix(string(contents), "\n")
+	output := agentJudgeOutput{}
+	for _, input := range inputs {
+		var result []AssertionResult
+		for _, entry := range legacy.Cases {
+			if entry.ID != input.ID || entry.Trial != input.Trial {
+				continue
+			}
+			if input.Side == "A" {
+				result = entry.AAssertionResults
+			} else {
+				result = entry.BAssertionResults
+			}
+			break
+		}
+		for index := range result {
+			if result[index].Passed {
+				result[index].Evidence = line
+				result[index].EvidenceReferences = []EvidenceReference{{Path: "response.md", StartLine: 1, EndLine: 1}}
+			}
+		}
+		output.Cases = append(output.Cases, agentJudgeEntry{ID: input.ID, Trial: input.Trial, Side: input.Side, AssertionResults: result})
+	}
+	encoded, err := json.Marshal(output)
+	return string(encoded), err
 }
 
 func TestExecuteTaskPersistsTransportRetryEvidence(t *testing.T) {
@@ -307,8 +355,8 @@ func TestRunWritesAgentSkillsWorkspaceAndCachesSuccess(t *testing.T) {
 	if !cached.Passed || !cached.Cached {
 		t.Fatalf("cached report = %#v", cached)
 	}
-	if agent.runs != 4 { // candidate, baseline, grader, and comparator.
-		t.Fatalf("agent runs = %d, want 4", agent.runs)
+	if agent.runs != 5 { // candidate, baseline, two blinded graders, and comparator.
+		t.Fatalf("agent runs = %d, want 5", agent.runs)
 	}
 	if len(agent.resolvePolicies) != 4 {
 		t.Fatalf("ResolveSecurity calls after cache lookup = %d, want two per Run call", len(agent.resolvePolicies))
@@ -408,8 +456,8 @@ func TestRunDoesNotRetryCompletedAssertionFailure(t *testing.T) {
 	if executionCalls != 2 {
 		t.Fatalf("completed candidate/baseline execution calls = %d, want exactly two", executionCalls)
 	}
-	if judgeCalls != 2 {
-		t.Fatalf("completed grader/comparator calls = %d, want exactly two", judgeCalls)
+	if judgeCalls != 3 {
+		t.Fatalf("completed grader/comparator calls = %d, want exactly three", judgeCalls)
 	}
 }
 
@@ -449,7 +497,7 @@ func TestRunCacheIncludesSandboxLevel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Cached || agent.runs != 8 {
+	if report.Cached || agent.runs != 10 {
 		t.Fatalf("sandbox change reused stale cache: cached=%v runs=%d", report.Cached, agent.runs)
 	}
 	contents, err := os.ReadFile(filepath.Join(report.Workspace, "benchmark.json"))
@@ -543,7 +591,7 @@ func TestBuildRunPromptDoesNotLeakEvaluatorExpectedOutput(t *testing.T) {
 	}
 }
 
-func TestRunUsesUnsandboxedSecurityForJudgesWithoutResolvingAgain(t *testing.T) {
+func TestRunKeepsJudgesReadOnlyWhenExecutionIsUnsandboxed(t *testing.T) {
 	t.Setenv(harness.NoCredentialBoundaryAcknowledgementEnv, "1")
 
 	root := filepath.Join(t.TempDir(), "demo")
@@ -567,13 +615,17 @@ func TestRunUsesUnsandboxedSecurityForJudgesWithoutResolvingAgain(t *testing.T) 
 	}
 	want := []harness.SecurityPolicy{
 		{Level: harness.SandboxUnsandboxed, Network: true},
+		{Level: harness.SandboxReadOnly, Network: false},
 	}
 	if !equalSecurityPolicies(agent.resolvePolicies, want) {
 		t.Fatalf("ResolveSecurity policies = %#v, want %#v", agent.resolvePolicies, want)
 	}
 	for _, request := range agent.requests {
-		if request.Security.Policy() != want[0] {
-			t.Fatalf("request security policy = %#v, want %#v", request.Security.Policy(), want[0])
+		if len(request.OutputSchema) == 0 && request.Security.Policy() != want[0] {
+			t.Fatalf("execution request security policy = %#v, want %#v", request.Security.Policy(), want[0])
+		}
+		if len(request.OutputSchema) > 0 && request.Security.Policy() != want[1] {
+			t.Fatalf("judge request security policy = %#v, want %#v", request.Security.Policy(), want[1])
 		}
 	}
 }

@@ -7,7 +7,7 @@ Maintainers choosing an evaluation tool can use this table to compare built-in b
 | Agent skills as first-class targets | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Repository guidance as a first-class target | ✅ | — | — | — | ✅ | — |
 | Built-in with/without A/B runs | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Quoted artifact evidence required per assertion | ✅ | — | — | — | — | — |
+| Positional artifact evidence required per positive assertion | ✅ | — | — | — | — | — |
 | Blind A/B output comparison | ✅ | ✅ | — | — | — | — |
 | Trigger checks with near-miss negatives | ✅ | ✅ | — | — | — | — |
 | Majority decides positive cases; any negative trigger fails | ✅ | — | — | — | — | — |
