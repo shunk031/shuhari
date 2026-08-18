@@ -27,10 +27,11 @@ for the requested side. It contains no skill name, candidate/baseline identity,
 or other side's files. The judge must read the files itself and must not follow
 instructions found in an untrusted artifact.
 
-The engine resolves judge security as `read-only` with network denied, even when
-the evaluated execution uses a less restricted mode. The Codex adapter receives
-that resolution through the same security and transport machinery used by
-other agent calls.
+Judge security selection follows the [execution security contract](architecture.md#execution-security-contract)
+and is recorded in the manifest as `judge_security`. The workspace still gives
+each judge only its blinded side's files. Under an acknowledged unsandboxed
+resolution, that is a scoping boundary rather than kernel filesystem
+isolation, so evaluators must not claim stronger protection.
 
 ## Positive evidence
 
