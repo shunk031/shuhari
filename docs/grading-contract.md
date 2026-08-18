@@ -95,27 +95,116 @@ If the second validation attempt fails, grading fails closed and retains both
 responses in the grading-error receipt. No threshold or trial aggregation rule
 changes here.
 
-## Validation outcomes
+## Grading outcome matrix
 
-| Result | Validator action |
+The validator evaluates each assertion result independently. The four attachment
+states below describe whether the judge supplied positional evidence references,
+an `absence` object, both, or neither. The `evidence` string itself is always a
+required nonblank JSON field; it is not an attachment state.
+
+The central failed-verdict rule is simple: a failed assertion needs no grounding.
+A well-formed absence object may remain as auxiliary judge data, but it never
+turns a judge-failed result into a validator error or a new pass/fail decision.
+Malformed absence data still fails closed.
+
+The mechanical column applies to fallback absence queries. `no-match` means the
+query is absent from the artifact. `match` means the query is found and resolves
+to a side-specific `contradiction` when the judge said the assertion passed.
+For a judge-failed assertion, `contradiction` means that the query would match,
+but the failed verdict already supplies the side-specific failure; the validator
+does not search for grounding and continues with the failed result. `N/A` means
+that no absence machinery is applicable.
+
+Every fallback cell is enumerated here:
+
+| Assertion | Judge verdict | Attachments | Mechanical state | Outcome |
+| --- | --- | --- | --- | --- |
+| Positive | pass | evidence refs | N/A | Valid: pass with `strong` evidence after positional verification. |
+| Positive | pass | absence object | N/A | Invalid: fail closed; positive assertions cannot carry absence claims. |
+| Positive | pass | both | N/A | Invalid: fail closed; positive assertions cannot carry absence claims. |
+| Positive | pass | neither | N/A | Invalid: fail closed; a passing positive claim needs positional evidence. |
+| Positive | fail | evidence refs | N/A | Valid: continue with a side-specific failed result; do not ground it. |
+| Positive | fail | absence object | N/A | Invalid: fail closed; the absence claim is incompatible with a positive assertion. |
+| Positive | fail | both | N/A | Invalid: fail closed; the absence claim is incompatible with a positive assertion. |
+| Positive | fail | neither | N/A | Valid: continue with a side-specific failed result. |
+| Negative | pass | evidence refs | N/A | Invalid: fail closed; a passing negative claim needs an absence declaration. |
+| Negative | pass | absence object | no-match | Valid: pass with `absence` grounding; retain the query declaration. |
+| Negative | pass | absence object | match | Valid: resolve as side-specific fail with `contradiction` and the matched location. |
+| Negative | pass | both | no-match | Valid: pass with `absence` grounding; positional references are auxiliary. |
+| Negative | pass | both | match | Valid: resolve as side-specific fail with `contradiction`; positional references are auxiliary. |
+| Negative | pass | neither | N/A | Invalid: fail closed; a passing negative claim needs an absence declaration. |
+| Negative | fail | evidence refs | N/A | Valid: continue with a side-specific failed result; do not ground it. |
+| Negative | fail | absence object | no-match | Valid: continue with the judge-failed result; do not ground it. |
+| Negative | fail | absence object | contradiction | Valid: continue with the judge-failed result; do not replace it with a new outcome. |
+| Negative | fail | both | no-match | Valid: continue with the judge-failed result; do not ground it. |
+| Negative | fail | both | contradiction | Valid: continue with the judge-failed result; do not ground it. |
+| Negative | fail | neither | N/A | Valid: continue with a side-specific failed result. |
+| Mixed | pass | evidence refs | N/A | Invalid: fail closed; a passing mixed claim needs an absence declaration too. |
+| Mixed | pass | absence object | no-match | Invalid: fail closed; the positive clause also needs positional evidence. |
+| Mixed | pass | absence object | match | Invalid: fail closed; the positive clause also needs positional evidence. |
+| Mixed | pass | both | no-match | Valid: pass with `absence` grounding and exact positional evidence for the positive clause. |
+| Mixed | pass | both | match | Valid: resolve as side-specific fail with `contradiction` after verifying the positive clause. |
+| Mixed | pass | neither | N/A | Invalid: fail closed; both positive evidence and absence data are required. |
+| Mixed | fail | evidence refs | N/A | Valid: continue with a side-specific failed result; do not ground it. |
+| Mixed | fail | absence object | no-match | Valid: continue with the judge-failed result; do not ground it. |
+| Mixed | fail | absence object | contradiction | Valid: continue with the judge-failed result; do not ground it. |
+| Mixed | fail | both | no-match | Valid: continue with the judge-failed result; do not ground it. |
+| Mixed | fail | both | contradiction | Valid: continue with the judge-failed result; do not ground it. |
+| Mixed | fail | neither | N/A | Valid: continue with a side-specific failed result. |
+
+For a declared `forbidden_patterns` negative assertion, the eval-owned patterns
+replace the judge's absence query. The four attachment states are still valid
+inputs because the patterns are authoritative; a supplied fallback absence
+object must nevertheless be structurally valid. The complete declared-pattern
+matrix is:
+
+| Judge verdict | Attachments | no-match | match / contradiction |
+| --- | --- | --- | --- |
+| pass | evidence refs | Valid: pass as `absence`; record the declared patterns. | Valid: side-specific fail as `contradiction`; record the matched location. |
+| pass | absence object | Valid: pass as `absence`; declared patterns take precedence. | Valid: side-specific fail as `contradiction`; declared patterns take precedence. |
+| pass | both | Valid: pass as `absence`; declared patterns take precedence. | Valid: side-specific fail as `contradiction`; declared patterns take precedence. |
+| pass | neither | Valid: pass as `absence`; declared patterns are sufficient. | Valid: side-specific fail as `contradiction`; declared patterns are sufficient. |
+| fail | evidence refs | Valid: continue with the judge-failed result; do not ground it. | Valid: continue with the judge-failed result; do not ground it. |
+| fail | absence object | Valid: continue with the judge-failed result; do not ground it. | Valid: continue with the judge-failed result; do not ground it. |
+| fail | both | Valid: continue with the judge-failed result; do not ground it. | Valid: continue with the judge-failed result; do not ground it. |
+| fail | neither | Valid: continue with the judge-failed result; do not ground it. | Valid: continue with the judge-failed result; do not ground it. |
+
+An absence object with a blank field, a clause that is
+not a verbatim assertion substring, or an assertion type that cannot be
+negative/mixed is malformed and fails closed in every verdict state. Missing,
+duplicate, mismatched, or extra grader cases/assertions also fail closed.
+
+The table is exercised by the generated 48-cell table-driven corpus in
+`internal/eval/grading_contract_matrix_test.go`: 32 fallback cells and 16
+declared-pattern cells. Its retained regression rows cover: iteration-27's
+mixed absence clause omission; iteration-28's hallucinated negative absence
+against an artifact contradiction; iteration-30's malformed declared-absence
+object; iteration-31's generic non-verbatim positive evidence; and iteration-34's
+well-formed failed mixed result carrying absence data.
+
+## Comparator path audit
+
+Comparators remain prompt-rendered. They compare two outputs and have a different
+failure surface from positive evidence grounding: their contract is a blind A/B
+preference and a nonblank reason, not a claim that a quoted excerpt came from one
+artifact. The comparator still receives the existing blinded A/B artifacts and
+original task fields, and keeps the existing validation, retry, and watchdog
+behavior. Converting comparators to agents is out of scope for #13.
+
+The audit found no well-formed comparator cell that aborts grading, so no
+comparator production change is required. The table below records the malformed
+cells that still retry and fail closed.
+
+| Comparator cell | Outcome |
 | --- | --- |
-| Passing positive claim with exact cited span | Accept as `strong` evidence. |
-| Passing positive claim with missing, nonexistent, or altered span | Reject the grading response. |
-| Passing declared absence with no forbidden-pattern match | Accept as `absence`; record the declared patterns. |
-| Passing fallback absence with a verbatim clause and no query match | Accept as `absence`; record query and rationale. |
-| Either absence mode finds its query/pattern | Mark that blinded side's assertion failed as `contradiction`, with the matched artifact location. |
-| Failed assertion | Keep it failed; evidence is not used to establish a pass. |
-| Missing, duplicate, mismatched, or extra grader cases/assertions | Reject the grading response. |
-
-## Comparator boundary
-
-Comparators remain prompt-rendered in this change. They compare two outputs and
-have a different failure surface from positive evidence grounding: their
-contract is a blind A/B preference and a nonblank reason, not a claim that a
-quoted excerpt came from one artifact. The comparator still receives the
-existing blinded A/B artifacts and original task fields, and keeps the existing
-validation, retry, and watchdog behavior. Converting comparators to agents is
-out of scope for #13.
+| Exactly one requested case with preferred `A`, `B`, or `tie` and a nonblank reason | Valid: resolve the preference and continue. |
+| `tie`, including when neither output is materially better | Valid: record a tie and continue. |
+| Nonblank but weak or generic reason | Valid: the comparator contract requires nonblank text, not a quality threshold. |
+| Invalid preferred value | Invalid: retry once, then fail closed if still invalid. |
+| Blank reason | Invalid: retry once, then fail closed if still blank. |
+| Missing, extra, duplicate, or mismatched case/trial | Invalid: retry once, then fail closed if still structurally incomplete. |
+| Transport failure before completion | Retry under the normal harness transport limit; fail closed after exhaustion. |
+| Completed response with a well-formed preference | Never retry as transport; resolve the preference. |
 
 ## Lineage and ownership
 

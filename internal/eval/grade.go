@@ -621,6 +621,11 @@ func buildAgentGradingWithForbiddenPatterns(expected []string, forbiddenPatterns
 		if !ok {
 			return Grading{}, fmt.Errorf("%w: missing assertion %q", errInvalidGrading, assertion)
 		}
+		if result.Absence != nil {
+			if err := validateFallbackAbsenceClaim(assertion, result.Absence); err != nil {
+				return Grading{}, err
+			}
+		}
 		if result.Passed {
 			var grounding evidenceGrounding
 			if patterns := forbiddenPatterns[assertion]; len(patterns) > 0 {
@@ -630,9 +635,6 @@ func buildAgentGradingWithForbiddenPatterns(expected []string, forbiddenPatterns
 					result.Passed = false
 				}
 			} else if result.Absence != nil {
-				if err := validateFallbackAbsenceClaim(assertion, result.Absence); err != nil {
-					return Grading{}, err
-				}
 				if requiresVerbatimPositiveEvidence(assertion, result.Absence.NegatedClause) {
 					if _, err := groundAgentEvidence(result, artifactRoot); err != nil {
 						return Grading{}, err
@@ -656,9 +658,6 @@ func buildAgentGradingWithForbiddenPatterns(expected []string, forbiddenPatterns
 			result.EvidenceGroundingSpan = grounding.Span
 			result.EvidenceGroundingObservation = grounding.Observation
 		} else {
-			if result.Absence != nil {
-				return Grading{}, fmt.Errorf("%w: failed assertion %q cannot carry an absence claim", errInvalidGrading, assertion)
-			}
 			result.EvidenceGrounding = evidenceGroundingNotApplicable
 			result.EvidenceGroundingScore = 0
 			result.EvidenceGroundingSpan = ""
