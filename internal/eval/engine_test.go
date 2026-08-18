@@ -591,7 +591,7 @@ func TestBuildRunPromptDoesNotLeakEvaluatorExpectedOutput(t *testing.T) {
 	}
 }
 
-func TestRunKeepsJudgesReadOnlyWhenExecutionIsUnsandboxed(t *testing.T) {
+func TestRunAppliesUnsandboxedResolutionToJudges(t *testing.T) {
 	t.Setenv(harness.NoCredentialBoundaryAcknowledgementEnv, "1")
 
 	root := filepath.Join(t.TempDir(), "demo")
@@ -606,7 +606,7 @@ func TestRunKeepsJudgesReadOnlyWhenExecutionIsUnsandboxed(t *testing.T) {
 	grader, _ := json.Marshal(judgeOutput{Cases: []judgeEntry{{ID: "one", Trial: 1, AAssertionResults: grades, BAssertionResults: grades}}})
 	compared, _ := json.Marshal(comparatorOutput{Cases: []comparatorEntry{{ID: "one", Trial: 1, Preferred: preferredLabel(mapping, variantWithSkill), Reason: "better"}}})
 	agent := &fakeHarness{judgeResponse: string(grader), compareResponse: string(compared)}
-	_, err = Run(context.Background(), suite, agent, cache.Store{Root: t.TempDir()}, Config{
+	report, err := Run(context.Background(), suite, agent, cache.Store{Root: t.TempDir()}, Config{
 		Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"),
 		SandboxLevel: string(harness.SandboxUnsandboxed), Network: true, NoCache: true,
 	})
@@ -615,7 +615,6 @@ func TestRunKeepsJudgesReadOnlyWhenExecutionIsUnsandboxed(t *testing.T) {
 	}
 	want := []harness.SecurityPolicy{
 		{Level: harness.SandboxUnsandboxed, Network: true},
-		{Level: harness.SandboxReadOnly, Network: false},
 	}
 	if !equalSecurityPolicies(agent.resolvePolicies, want) {
 		t.Fatalf("ResolveSecurity policies = %#v, want %#v", agent.resolvePolicies, want)
@@ -624,9 +623,22 @@ func TestRunKeepsJudgesReadOnlyWhenExecutionIsUnsandboxed(t *testing.T) {
 		if len(request.OutputSchema) == 0 && request.Security.Policy() != want[0] {
 			t.Fatalf("execution request security policy = %#v, want %#v", request.Security.Policy(), want[0])
 		}
-		if len(request.OutputSchema) > 0 && request.Security.Policy() != want[1] {
-			t.Fatalf("judge request security policy = %#v, want %#v", request.Security.Policy(), want[1])
+		if len(request.OutputSchema) > 0 && request.Security.Policy() != want[0] {
+			t.Fatalf("judge request security policy = %#v, want %#v", request.Security.Policy(), want[0])
 		}
+	}
+	manifestContents, err := os.ReadFile(filepath.Join(report.Workspace, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		JudgeSecurity harness.SecurityResolution `json:"judge_security"`
+	}
+	if err := json.Unmarshal(manifestContents, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.JudgeSecurity.SandboxLevel != harness.SandboxUnsandboxed || manifest.JudgeSecurity.NetworkAccess != harness.NetworkAllowed || manifest.JudgeSecurity.CredentialBoundary != harness.CredentialBoundaryNone {
+		t.Fatalf("manifest judge security = %#v, want acknowledged unsandboxed resolution", manifest.JudgeSecurity)
 	}
 }
 

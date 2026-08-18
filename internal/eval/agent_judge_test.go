@@ -144,12 +144,13 @@ func TestAgentJudgeKeepsBlindedArtifactsOutOfPrompt(t *testing.T) {
 	}
 
 	agent := &blindAgentJudgeHarness{}
+	judgeSecurity := fakeSecurityResolution(harness.SecurityPolicy{Level: harness.SandboxUnsandboxed, Network: true})
 	_, _, _, _, _, err := gradeRuns(
 		context.Background(), agent,
 		Suite{Kind: harness.TargetSkill, Cases: []Case{item}},
 		results,
 		Config{Trials: 1, Timeout: time.Second},
-		testJudgeSecurity(),
+		judgeSecurity,
 		filepath.Join(root, "iteration-1"),
 	)
 	if err != nil {
@@ -165,6 +166,9 @@ func TestAgentJudgeKeepsBlindedArtifactsOutOfPrompt(t *testing.T) {
 	for _, request := range requests {
 		if !strings.Contains(string(request.OutputSchema), "evidence_references") {
 			continue
+		}
+		if request.Security != judgeSecurity {
+			t.Fatalf("grader request security = %#v, want unsandboxed resolution %#v", request.Security, judgeSecurity)
 		}
 		graderRequests++
 		prompt := request.Prompt

@@ -48,6 +48,9 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	}
 	judgePolicy := harness.SecurityPolicy{Level: harness.SandboxReadOnly, Network: false}
 	judgeSecurity := runSecurity
+	if runPolicy.Level == harness.SandboxUnsandboxed {
+		judgePolicy = runPolicy
+	}
 	if judgePolicy != runPolicy {
 		judgeSecurity, err = agent.ResolveSecurity(ctx, judgePolicy)
 		if err != nil {

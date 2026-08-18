@@ -86,7 +86,15 @@ All modes strip known GitHub credential variables from child commands. This is o
 
 An explicit `--sandbox` wins over `SHUHARI_SANDBOX`. `ResolveSecurity` returns one digest-bearing adapter mapping; the engine validates and reuses it for runs, artifacts, and cache keys. `Probe` checks the native sandbox before workspace creation. Unsupported mappings or hosts return `ErrUnsupportedSecurityPolicy`; Shuhari never degrades.
 
-Judges always use `read-only` without network. Their workspace contains only a copied artifact tree for one blinded side; artifacts are not rendered into the judge prompt. The comparator remains prompt-rendered because it compares two outputs rather than grounding a positive claim.
+Judges use resolved `read-only` without network for protected execution. When
+the evaluated execution is explicitly acknowledged `unsandboxed`, the judge
+reuses that unsandboxed resolution as well; its per-side copied artifact tree
+still gives each judge only the files for its blinded side. An unsandboxed
+judge may nevertheless access paths outside that copied tree, so no kernel
+filesystem guarantee is claimed; evaluators must record and review that weaker
+boundary. Artifacts are not rendered into the judge prompt. The comparator
+remains prompt-rendered because it compares two outputs rather than grounding
+a positive claim.
 
 ### Security provenance
 
