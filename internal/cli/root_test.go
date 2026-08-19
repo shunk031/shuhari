@@ -128,6 +128,53 @@ func TestEvalSkillValidateOnlyDoesNotStartAgent(t *testing.T) {
 	}
 }
 
+func TestValidateOnlyCoversInstructionAndTriggerCommands(t *testing.T) {
+	root := writeValidationFixtures(t)
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "instructions", args: []string{"eval", "instructions", "--validate-only", filepath.Join(root, "AGENTS.md")}, want: "demo: valid\n"},
+		{name: "trigger", args: []string{"check", "trigger", "--validate-only", root}, want: "demo: valid\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := NewRoot(Options{Version: "test", HarnessFactory: func(string, harness.Config) (harness.Harness, error) {
+				return nil, errors.New("agent must not be created")
+			}})
+			command.SetArgs(test.args)
+			var stdout bytes.Buffer
+			command.SetOut(&stdout)
+			command.SetErr(&bytes.Buffer{})
+			if err := command.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if stdout.String() != test.want {
+				t.Fatalf("stdout = %q, want %q", stdout.String(), test.want)
+			}
+		})
+	}
+}
+
+func TestEvalSkillRejectsSharedWorkspaceForMultipleSkills(t *testing.T) {
+	first := writeValidationFixtures(t)
+	second := writeValidationFixtures(t)
+	command := NewRoot(Options{Version: "test"})
+	command.SetArgs([]string{"eval", "skill", "--validate-only", "--workspace", t.TempDir(), first, second})
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&bytes.Buffer{})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "cannot be shared") {
+		t.Fatalf("Execute() error = %v, want workspace guard", err)
+	}
+}
+
+func TestResolveSkillPathsRejectsPathWithoutSkill(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nested", "file.md")
+	if _, err := resolveSkillPaths([]string{missing}); err == nil || !strings.Contains(err.Error(), "no SKILL.md") {
+		t.Fatalf("resolveSkillPaths() error = %v, want missing SKILL.md", err)
+	}
+}
+
 func TestResolveSkillPathsDeduplicatesFilesFromOneSkill(t *testing.T) {
 	t.Parallel()
 
