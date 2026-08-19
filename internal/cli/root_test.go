@@ -153,6 +153,25 @@ func TestResolveSkillPathsDeduplicatesFilesFromOneSkill(t *testing.T) {
 	}
 }
 
+func TestPrintReportAndExitCodePreserveGateOutcome(t *testing.T) {
+	root := NewRoot(Options{Version: "test"})
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	if err := printReport(root, "demo", false, "/tmp/workspace", []string{"claim failed"}); err == nil {
+		t.Fatal("printReport() accepted a failed report")
+	}
+	if stdout.String() != "demo: failed workspace=/tmp/workspace\n" || stderr.String() != "  - claim failed\n" {
+		t.Fatalf("report output = %q / %q", stdout.String(), stderr.String())
+	}
+	if exitCode(nil) != 0 || exitCode(gateError{message: "failed"}) != 1 || exitCode(errors.New("fatal")) != 2 {
+		t.Fatal("exitCode() did not distinguish report and fatal errors")
+	}
+	if (gateError{message: "message"}).Error() != "message" {
+		t.Fatal("gateError.Error() did not return its message")
+	}
+}
+
 func writeValidationFixtures(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "demo")
