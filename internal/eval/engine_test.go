@@ -137,3 +137,9 @@ func TestRunWritesReferenceShapedArtifactsWithBlindedAgentJudges(t *testing.T) {
 		t.Fatalf("grading retained removed evidence fields: %s", contents)
 	}
 }
+
+func TestAllTrialsPassRequiresAtLeastOneSuccessfulTrial(t *testing.T) {
+	if allTrialsPass(nil) || !allTrialsPass([]bool{true, true}) || allTrialsPass([]bool{true, false}) {
+		t.Fatal("allTrialsPass() did not enforce non-empty all-true semantics")
+	}
+}
