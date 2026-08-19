@@ -1,85 +1,60 @@
 package eval
 
-import (
-	"encoding/json"
-	"testing"
-)
+import "testing"
 
-func TestCaseAssertionsPass(t *testing.T) {
-	t.Parallel()
-
-	if !caseAssertionsPass([]bool{true, false, true}, false) {
-		t.Fatal("2/3 majority did not pass")
-	}
-	if caseAssertionsPass([]bool{true, false, true}, true) {
-		t.Fatal("strict policy accepted a failed trial")
-	}
-	if caseAssertionsPass(nil, false) {
-		t.Fatal("empty trials passed")
+func TestCaseAssertionsPassesMajorityAndStrictPolicies(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		values []bool
+		strict bool
+		want   bool
+	}{
+		{name: "empty", values: nil, want: false},
+		{name: "majority pass", values: []bool{true, false, true}, want: true},
+		{name: "majority fail", values: []bool{true, false, false}, want: false},
+		{name: "strict pass", values: []bool{true, true}, strict: true, want: true},
+		{name: "strict fail", values: []bool{true, false}, strict: true, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := caseAssertionsPass(test.values, test.strict); got != test.want {
+				t.Fatalf("caseAssertionsPass(%v, %v) = %v, want %v", test.values, test.strict, got, test.want)
+			}
+		})
 	}
 }
 
-func TestBenchmarkDelta(t *testing.T) {
-	t.Parallel()
-
-	benchmark := buildBenchmark([]gradedRun{
-		{Variant: variantWithSkill, PassRate: 1, TimeSeconds: 1, Tokens: 100},
-		{Variant: variantWithoutSkill, PassRate: 0.5, TimeSeconds: 0.6, Tokens: 60},
-	})
-	if benchmark.RunSummary.Delta.PassRate != 0.5 {
-		t.Fatalf("pass-rate delta = %v, want 0.5", benchmark.RunSummary.Delta.PassRate)
-	}
-	if benchmark.RunSummary.Delta.TimeSeconds != 0.4 {
-		t.Fatalf("time delta = %v, want 0.4", benchmark.RunSummary.Delta.TimeSeconds)
-	}
-}
-
-func TestInstructionsBenchmarkOmitsSkillConfigurations(t *testing.T) {
-	t.Parallel()
-
-	benchmark := buildBenchmark([]gradedRun{
-		{Variant: variantWithInstructions, PassRate: 1},
-		{Variant: variantWithoutInstructions, PassRate: 0},
-	})
-	encoded, err := json.Marshal(benchmark)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var object map[string]any
-	if err := json.Unmarshal(encoded, &object); err != nil {
-		t.Fatal(err)
-	}
-	summary := object["run_summary"].(map[string]any)
-	if _, exists := summary["with_skill"]; exists {
-		t.Fatalf("instructions benchmark contains with_skill: %s", encoded)
-	}
-	if _, exists := summary["without_skill"]; exists {
-		t.Fatalf("instructions benchmark contains without_skill: %s", encoded)
-	}
-}
-
-func TestAssertionAnalysisClassifiesDeterministicOutcomes(t *testing.T) {
-	t.Parallel()
-
+func TestBuildBenchmarkClassifiesAssertionsAndStatistics(t *testing.T) {
 	runs := []gradedRun{
-		{CaseID: "case", Trial: 1, Variant: variantWithSkill, AssertionResult: []AssertionResult{{Text: "value", Passed: true}}},
-		{CaseID: "case", Trial: 2, Variant: variantWithSkill, AssertionResult: []AssertionResult{{Text: "value", Passed: true}}},
-		{CaseID: "case", Trial: 1, Variant: variantWithoutSkill, AssertionResult: []AssertionResult{{Text: "value", Passed: false}}},
-		{CaseID: "case", Trial: 2, Variant: variantWithoutSkill, AssertionResult: []AssertionResult{{Text: "value", Passed: false}}},
+		{CaseID: "one", Variant: variantWithSkill, PassRate: 1, TimeSeconds: 2, Tokens: 10, AssertionResult: []AssertionResult{{Text: "claim", Passed: true}}},
+		{CaseID: "one", Variant: variantWithoutSkill, PassRate: 0, TimeSeconds: 4, Tokens: 20, AssertionResult: []AssertionResult{{Text: "claim", Passed: false}}},
+		{CaseID: "two", Variant: variantWithSkill, PassRate: 0, TimeSeconds: 3, Tokens: 11, AssertionResult: []AssertionResult{{Text: "claim", Passed: false}}},
+		{CaseID: "two", Variant: variantWithoutSkill, PassRate: 0, TimeSeconds: 5, Tokens: 21, AssertionResult: []AssertionResult{{Text: "claim", Passed: false}}},
 	}
 	benchmark := buildBenchmark(runs)
-	if len(benchmark.AssertionAnalysis) != 1 || benchmark.AssertionAnalysis[0].Category != "pass_with_fail_without" {
-		t.Fatalf("analysis = %#v", benchmark.AssertionAnalysis)
+	if benchmark.RunSummary.WithSkill == nil || benchmark.RunSummary.WithoutSkill == nil {
+		t.Fatalf("skill benchmark summary = %#v", benchmark.RunSummary)
+	}
+	if len(benchmark.AssertionAnalysis) != 2 {
+		t.Fatalf("assertion analysis = %#v", benchmark.AssertionAnalysis)
+	}
+	if benchmark.AssertionAnalysis[0].Category == "mixed" {
+		t.Fatalf("assertion analysis did not classify pass/fail categories: %#v", benchmark.AssertionAnalysis)
+	}
+	if statistic([]float64{1, 3}).Mean != 2 || statistic([]float64{1, 3}).Stddev != 1 {
+		t.Fatalf("statistic = %#v", statistic([]float64{1, 3}))
+	}
+	if got := countRate(nil); got != 0 {
+		t.Fatalf("countRate(nil) = %v", got)
 	}
 }
 
-func TestRequiredActionsAlwaysRequireEveryTrial(t *testing.T) {
-	t.Parallel()
-
-	if allTrialsPass([]bool{true, false, true}) {
-		t.Fatal("required actions accepted a 2/3 majority")
+func TestBuildBenchmarkSelectsInstructionVariants(t *testing.T) {
+	runs := []gradedRun{
+		{CaseID: "one", Variant: variantWithInstructions, PassRate: 1, AssertionResult: []AssertionResult{{Text: "claim", Passed: true}}},
+		{CaseID: "one", Variant: variantWithoutInstructions, PassRate: 0, AssertionResult: []AssertionResult{{Text: "claim", Passed: false}}},
 	}
-	if !allTrialsPass([]bool{true, true, true}) {
-		t.Fatal("required actions rejected all passing trials")
+	benchmark := buildBenchmark(runs)
+	if benchmark.RunSummary.WithInstructions == nil || benchmark.RunSummary.WithoutInstructions == nil || benchmark.RunSummary.WithSkill != nil {
+		t.Fatalf("instruction benchmark summary = %#v", benchmark.RunSummary)
 	}
 }

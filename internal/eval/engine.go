@@ -2,7 +2,6 @@ package eval
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shunk031/shuhari/internal/cache"
 	"github.com/shunk031/shuhari/internal/harness"
 	"github.com/shunk031/shuhari/internal/receipt"
 	contracts "github.com/shunk031/shuhari/schemas"
@@ -29,7 +27,7 @@ type runOutcome struct {
 	Err    error
 }
 
-func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.Store, config Config) (Report, error) {
+func Run(ctx context.Context, suite Suite, agent harness.Harness, config Config) (Report, error) {
 	if config.Trials < 1 || config.Jobs < 1 || config.Timeout <= 0 {
 		return Report{}, errors.New("trials, jobs, and timeout must be positive")
 	}
@@ -75,33 +73,11 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if err != nil {
 		return Report{}, err
 	}
-	runnerDigest, err := cache.RunnerDigest()
-	if err != nil {
-		return Report{}, err
-	}
-	cacheOptions, _ := json.Marshal(struct {
-		Digest           string
-		RunnerDigest     string
-		Identity         harness.Identity
-		Config           Config
-		RunSecurity      harness.SecurityResolution
-		JudgeSecurity    harness.SecurityResolution
-		GraderDigest     string
-		ComparatorDigest string
-	}{Digest: digest, RunnerDigest: runnerDigest, Identity: identity, Config: config, RunSecurity: runSecurity, JudgeSecurity: judgeSecurity, GraderDigest: promptDigest(graderPrompt), ComparatorDigest: promptDigest(comparatorPrompt)})
-	key := cache.Key(cacheOptions)
-	if !config.NoCache {
-		if record, ok, err := store.GetSuccess(key); err != nil {
-			return Report{}, err
-		} else if ok {
-			return Report{Passed: true, Cached: true, Workspace: record.Workspace}, nil
-		}
-	}
 	iteration, err := createIteration(suite, config.Workspace)
 	if err != nil {
 		return Report{}, err
 	}
-	if err := writeManifest(iteration, suite, digest, runnerDigest, identity, config, runSecurity, judgeSecurity); err != nil {
+	if err := writeManifest(iteration, suite, digest, identity, config, runSecurity, judgeSecurity); err != nil {
 		return Report{Workspace: iteration}, err
 	}
 	withVariant, withoutVariant := variantsFor(suite.Kind)
@@ -143,7 +119,6 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	}
 
 	passedByCase := map[string][]bool{}
-	actionsByCase := map[string][]bool{}
 	gradedByKey := map[string]gradedRun{}
 	for _, run := range graded {
 		gradedByKey[runKey(run.CaseID, run.Trial, run.Variant)] = run
@@ -152,20 +127,11 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 		for trial := 1; trial <= config.Trials; trial++ {
 			grade, ok := gradedByKey[runKey(item.ID, trial, withVariant)]
 			passedByCase[item.ID] = append(passedByCase[item.ID], ok && grade.Passed)
-			for _, result := range results {
-				if result.Case.ID == item.ID && result.Trial == trial && result.Variant == withVariant {
-					actionsByCase[item.ID] = append(actionsByCase[item.ID], harness.ContainsOrderedActions(result.Agent.Actions, result.Agent.OrderUnknownActions, item.RequiredActions))
-					break
-				}
-			}
 		}
 	}
 	for _, item := range suite.Cases {
 		if !caseAssertionsPass(passedByCase[item.ID], config.StrictAllTrials) {
 			reasons = append(reasons, fmt.Sprintf("%s: candidate assertions did not satisfy the trial policy", item.ID))
-		}
-		if len(item.RequiredActions) > 0 && !allTrialsPass(actionsByCase[item.ID]) {
-			reasons = append(reasons, fmt.Sprintf("%s: required actions were not observed in order", item.ID))
 		}
 	}
 	if candidateWins < baselineWins {
@@ -186,11 +152,6 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 		}
 		return report, nil
 	}
-	if !config.NoCache {
-		if err := store.PutSuccess(key, cache.Record{Passed: true, CreatedAt: time.Now().UTC(), Workspace: iteration}); err != nil {
-			return report, err
-		}
-	}
 	return report, nil
 }
 
@@ -206,7 +167,7 @@ func allTrialsPass(values []bool) bool {
 	return true
 }
 
-func writeManifest(iteration string, suite Suite, suiteDigest, runnerDigest string, identity harness.Identity, config Config, security, judgeSecurity harness.SecurityResolution) error {
+func writeManifest(iteration string, suite Suite, suiteDigest string, identity harness.Identity, config Config, security, judgeSecurity harness.SecurityResolution) error {
 	policy := harness.SecurityPolicy{Level: harness.SandboxLevel(config.SandboxLevel), Network: config.Network}
 	if err := harness.ValidateSecurityResolution(policy, security); err != nil {
 		return fmt.Errorf("validate manifest security: %w", err)
@@ -217,14 +178,13 @@ func writeManifest(iteration string, suite Suite, suiteDigest, runnerDigest stri
 		TargetKind       harness.TargetKind         `json:"target_kind"`
 		TargetName       string                     `json:"target_name"`
 		SuiteDigest      string                     `json:"suite_digest"`
-		RunnerDigest     string                     `json:"runner_digest"`
 		AgentIdentity    harness.Identity           `json:"agent_identity"`
 		Config           Config                     `json:"config"`
 		Security         harness.SecurityResolution `json:"security"`
 		JudgeSecurity    harness.SecurityResolution `json:"judge_security"`
 		GraderDigest     string                     `json:"grader_prompt_digest"`
 		ComparatorDigest string                     `json:"comparator_prompt_digest"`
-	}{SchemaVersion: workspaceManifestSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: suite.Kind, TargetName: suite.Name, SuiteDigest: suiteDigest, RunnerDigest: runnerDigest, AgentIdentity: identity, Config: config, Security: security, JudgeSecurity: judgeSecurity, GraderDigest: promptDigest(graderPrompt), ComparatorDigest: promptDigest(comparatorPrompt)}
+	}{SchemaVersion: workspaceManifestSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: suite.Kind, TargetName: suite.Name, SuiteDigest: suiteDigest, AgentIdentity: identity, Config: config, Security: security, JudgeSecurity: judgeSecurity, GraderDigest: promptDigest(graderPrompt), ComparatorDigest: promptDigest(comparatorPrompt)}
 	if err := contracts.Validate("workspace", manifest); err != nil {
 		return err
 	}

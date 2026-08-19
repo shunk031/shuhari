@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/shunk031/shuhari/internal/cache"
 	"github.com/shunk031/shuhari/internal/harness"
 	"github.com/spf13/cobra"
 )
@@ -16,7 +15,6 @@ type HarnessFactory func(string, harness.Config) (harness.Harness, error)
 
 type Options struct {
 	Version        string
-	Cache          cache.Store
 	HarnessFactory HarnessFactory
 }
 
@@ -49,13 +47,6 @@ func Execute(ctx context.Context, options Options, stdout, stderr io.Writer) err
 	return root.Execute()
 }
 
-func cacheStore(options Options) (cache.Store, error) {
-	if options.Cache.Root != "" {
-		return options.Cache, nil
-	}
-	return cache.DefaultStore()
-}
-
 func newHarness(options Options, agentName, executable string) (harness.Harness, error) {
 	return options.HarnessFactory(agentName, harness.Config{Executable: executable})
 }
@@ -79,13 +70,10 @@ func resolveSecurityFlags(command *cobra.Command, sandbox *string, network bool)
 	return nil
 }
 
-func printReport(command *cobra.Command, name string, passed, cached bool, workspace string, reasons []string) error {
+func printReport(command *cobra.Command, name string, passed bool, workspace string, reasons []string) error {
 	status := "passed"
 	if !passed {
 		status = "failed"
-	}
-	if cached {
-		status += " (cached)"
 	}
 	fmt.Fprintf(command.OutOrStdout(), "%s: %s", name, status)
 	if workspace != "" {

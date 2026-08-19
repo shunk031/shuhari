@@ -31,12 +31,10 @@ type Config struct {
 	Network         bool          `json:"network"`
 	Workspace       string        `json:"-"`
 	StrictAllTrials bool          `json:"strict_all_trials"`
-	NoCache         bool          `json:"-"`
 }
 
 type Report struct {
 	Passed    bool
-	Cached    bool
 	Workspace string
 	Reasons   []string
 }

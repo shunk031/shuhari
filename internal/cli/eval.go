@@ -26,7 +26,6 @@ type evalFlags struct {
 	jobs                 int
 	timeoutSeconds       int
 	strict               bool
-	noCache              bool
 	validateOnly         bool
 }
 
@@ -63,10 +62,6 @@ func newEvalSkillCommand(options Options) *cobra.Command {
 				}
 				return nil
 			}
-			store, err := cacheStore(options)
-			if err != nil {
-				return err
-			}
 			var agentCreated bool
 			var agentInstance harness.Harness
 			var gateFailure error
@@ -82,11 +77,11 @@ func newEvalSkillCommand(options Options) *cobra.Command {
 					}
 					agentCreated = true
 				}
-				report, err := eval.Run(command.Context(), suite, agentInstance, store, flags.config())
+				report, err := eval.Run(command.Context(), suite, agentInstance, flags.config())
 				if err != nil {
 					return err
 				}
-				if err := printReport(command, suite.Name, report.Passed, report.Cached, report.Workspace, report.Reasons); err != nil {
+				if err := printReport(command, suite.Name, report.Passed, report.Workspace, report.Reasons); err != nil {
 					gateFailure = err
 				}
 			}
@@ -116,19 +111,15 @@ func newEvalInstructionsCommand(options Options) *cobra.Command {
 				fmt.Fprintf(command.OutOrStdout(), "%s: valid\n", suite.Name)
 				return nil
 			}
-			store, err := cacheStore(options)
-			if err != nil {
-				return err
-			}
 			agent, err := newHarness(options, flags.agent, flags.executable)
 			if err != nil {
 				return err
 			}
-			report, err := eval.Run(command.Context(), suite, agent, store, flags.config())
+			report, err := eval.Run(command.Context(), suite, agent, flags.config())
 			if err != nil {
 				return err
 			}
-			return printReport(command, suite.Name, report.Passed, report.Cached, report.Workspace, report.Reasons)
+			return printReport(command, suite.Name, report.Passed, report.Workspace, report.Reasons)
 		},
 	}
 	command.Flags().StringVar(&evalPath, "evals", "", "path to the instructions eval JSON")
@@ -150,12 +141,11 @@ func addEvalFlags(command *cobra.Command, flags *evalFlags) {
 	command.Flags().IntVar(&flags.jobs, "jobs", 2, "maximum concurrent evaluated runs")
 	command.Flags().IntVar(&flags.timeoutSeconds, "timeout", 180, "timeout per agent invocation in seconds")
 	command.Flags().BoolVar(&flags.strict, "strict-all-trials", false, "require every trial in every case to pass")
-	command.Flags().BoolVar(&flags.noCache, "no-cache", false, "ignore and do not write the success cache")
 	command.Flags().BoolVar(&flags.validateOnly, "validate-only", false, "validate inputs without running an agent")
 }
 
 func (flags evalFlags) config() eval.Config {
-	return eval.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, JudgeModel: flags.judgeModel, JudgeReasoningEffort: flags.judgeReasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict, NoCache: flags.noCache}
+	return eval.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, JudgeModel: flags.judgeModel, JudgeReasoningEffort: flags.judgeReasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict}
 }
 
 func resolveSkillPaths(arguments []string) ([]string, error) {

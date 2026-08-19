@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,5 +182,70 @@ func TestLoadSuiteRejectsNormalizedIDCollision(t *testing.T) {
 	}
 	if _, err := LoadSuite(root, ""); err == nil {
 		t.Fatal("LoadSuite() accepted colliding workspace IDs")
+	}
+}
+
+func TestLoadSuiteRejectsMalformedAndIncompleteCaseFiles(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "invalid json", content: "not json", want: "decode trigger cases"},
+		{name: "unknown field", content: `{"skill_name":"demo","cases":[],"extra":true}`, want: "decode trigger cases"},
+		{name: "empty cases", content: `{"skill_name":"demo","cases":[]}`, want: "must not be empty"},
+		{name: "duplicate id", content: `{"skill_name":"demo","cases":[{"id":1,"prompt":"a","should_trigger":true},{"id":1,"prompt":"b","should_trigger":false}]}`, want: "duplicate"},
+		{name: "blank prompt", content: `{"skill_name":"demo","cases":[{"id":1,"prompt":" ","should_trigger":true},{"id":2,"prompt":"b","should_trigger":false}]}`, want: "requires prompt"},
+		{name: "missing verdict", content: `{"skill_name":"demo","cases":[{"id":1,"prompt":"a"},{"id":2,"prompt":"b","should_trigger":false}]}`, want: "requires prompt"},
+		{name: "positive only", content: `{"skill_name":"demo","cases":[{"id":1,"prompt":"a","should_trigger":true}]}`, want: "positive and one negative"},
+		{name: "negative only", content: `{"skill_name":"demo","cases":[{"id":1,"prompt":"a","should_trigger":false}]}`, want: "positive and one negative"},
+		{name: "fraction id", content: `{"skill_name":"demo","cases":[{"id":1.5,"prompt":"a","should_trigger":true},{"id":2,"prompt":"b","should_trigger":false}]}`, want: "must be an integer"},
+		{name: "boolean id", content: `{"skill_name":"demo","cases":[{"id":true,"prompt":"a","should_trigger":true},{"id":2,"prompt":"b","should_trigger":false}]}`, want: "must be a non-empty string or integer"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "demo")
+			if err := os.MkdirAll(filepath.Join(root, "evals"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: demo\ndescription: Demo\n---\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "evals", "triggers.json"), []byte(test.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadSuite(root, ""); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadSuite() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	var raw json.RawMessage = []byte(`"case"`)
+	if id, err := decodeID(raw); err != nil || id != "case" {
+		t.Fatalf("decodeID(string) = %q, %v", id, err)
+	}
+	if id, err := decodeID(json.RawMessage(`42`)); err != nil || id != "42" {
+		t.Fatalf("decodeID(integer) = %q, %v", id, err)
+	}
+}
+
+func TestLoadSuiteSupportsExplicitExternalCasesFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: demo\ndescription: Demo\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	casesPath := filepath.Join(t.TempDir(), "cases.json")
+	if err := os.WriteFile(casesPath, []byte(`{"skill_name":"demo","cases":[{"id":"yes","prompt":"a","should_trigger":true},{"id":"no","prompt":"b","should_trigger":false}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	suite, err := LoadSuite(root, casesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if suite.CasesPath != casesPath || len(suite.Cases) != 2 {
+		t.Fatalf("suite = %#v", suite)
 	}
 }

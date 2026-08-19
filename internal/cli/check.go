@@ -21,7 +21,6 @@ type triggerFlags struct {
 	jobs            int
 	timeoutSeconds  int
 	strict          bool
-	noCache         bool
 	validateOnly    bool
 }
 
@@ -49,19 +48,15 @@ func newCheckTriggerCommand(options Options) *cobra.Command {
 				fmt.Fprintf(command.OutOrStdout(), "%s: valid\n", suite.SkillName)
 				return nil
 			}
-			store, err := cacheStore(options)
-			if err != nil {
-				return err
-			}
 			agent, err := newHarness(options, flags.agent, flags.executable)
 			if err != nil {
 				return err
 			}
-			report, err := trigger.Run(command.Context(), suite, agent, store, trigger.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict, NoCache: flags.noCache})
+			report, err := trigger.Run(command.Context(), suite, agent, trigger.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict})
 			if err != nil {
 				return err
 			}
-			return printReport(command, suite.SkillName, report.Passed, report.Cached, report.Workspace, report.Reasons)
+			return printReport(command, suite.SkillName, report.Passed, report.Workspace, report.Reasons)
 		},
 	}
 	command.Flags().StringVar(&flags.agent, "agent", "codex", "agent harness to use")
@@ -76,7 +71,6 @@ func newCheckTriggerCommand(options Options) *cobra.Command {
 	command.Flags().IntVar(&flags.jobs, "jobs", 2, "maximum concurrent trigger runs")
 	command.Flags().IntVar(&flags.timeoutSeconds, "timeout", 180, "timeout per agent invocation in seconds")
 	command.Flags().BoolVar(&flags.strict, "strict-all-trials", false, "require every trial to match should_trigger")
-	command.Flags().BoolVar(&flags.noCache, "no-cache", false, "ignore and do not write the success cache")
 	command.Flags().BoolVar(&flags.validateOnly, "validate-only", false, "validate inputs without running an agent")
 	return command
 }

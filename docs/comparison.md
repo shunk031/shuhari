@@ -7,13 +7,12 @@ Maintainers choosing an evaluation tool can use this table to compare built-in b
 | Agent skills as first-class targets | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Repository guidance as a first-class target | ✅ | — | — | — | ✅ | — |
 | Built-in with/without A/B runs | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Positional artifact evidence required per positive assertion | ✅ | — | — | — | — | — |
+| Free-form judge evidence recorded with grading | ✅ | ✅ | — | — | — | — |
 | Blind A/B output comparison | ✅ | ✅ | — | — | — | — |
 | Trigger checks with near-miss negatives | ✅ | ✅ | — | — | — | — |
 | Majority decides positive cases; any negative trigger fails | ✅ | — | — | — | — | — |
 | Fresh isolated workspace per trial or sample | ✅ | — | ✅ | ✅ | — | ✅ |
 | Agent-independent sandbox policy with protected credentials | 🚧 | — | — | — | — | — |
-| Cache reuses only successful runs with matching inputs and runtime | ✅ | — | — | — | — | — |
 | Machine-readable eval definitions and results | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Repository gate integration | ✅ | — | ✅ | — | ✅ | — |
 | Multiple coding-agent adapters | — | — | — | ✅ | ✅ | ✅ |

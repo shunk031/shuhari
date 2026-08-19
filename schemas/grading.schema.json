@@ -4,57 +4,14 @@
   "title": "Shuhari grading artifact",
   "type": "object",
   "properties": {
-    "assertion_results": {
+    "expectations": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
           "text": { "type": "string", "minLength": 1 },
           "passed": { "type": "boolean" },
-          "evidence": { "type": "string", "minLength": 1 },
-          "evidence_references": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "path": { "type": "string", "minLength": 1 },
-                "start_line": { "type": "integer", "minimum": 1 },
-                "end_line": { "type": "integer", "minimum": 1 }
-              },
-              "required": ["path", "start_line", "end_line"],
-              "additionalProperties": false
-            }
-          },
-          "absence": {
-            "oneOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "negated_clause": { "type": "string", "minLength": 1 },
-                  "query": { "type": "string", "minLength": 1 },
-                  "rationale": { "type": "string", "minLength": 1 }
-                },
-                "required": ["negated_clause", "query", "rationale"],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "forbidden_patterns": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": { "type": "string", "minLength": 1 }
-                  }
-                },
-                "required": ["forbidden_patterns"],
-                "additionalProperties": false
-              }
-            ]
-          },
-          "evidence_grounding": { "type": "string" },
-          "evidence_grounding_score": { "type": "number", "minimum": 0, "maximum": 1 },
-          "evidence_grounding_span": { "type": "string" },
-          "evidence_grounding_observation": { "type": "string" }
+          "evidence": { "type": "string", "minLength": 1 }
         },
         "required": ["text", "passed", "evidence"],
         "additionalProperties": false
@@ -72,6 +29,6 @@
       "additionalProperties": false
     }
   },
-  "required": ["assertion_results", "summary"],
+  "required": ["expectations", "summary"],
   "additionalProperties": false
 }
