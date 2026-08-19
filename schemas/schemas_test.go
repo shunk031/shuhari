@@ -6,22 +6,8 @@ import (
 )
 
 func TestValidateRejectsArtifactOutsideCheckedInSchema(t *testing.T) {
-	t.Parallel()
-
 	artifact := map[string]any{
-		"schema_version": "2",
-		"security": map[string]any{
-			"sandbox_level":       "isolated",
-			"network_access":      "denied",
-			"credential_boundary": "enforced",
-			"adapter": map[string]any{
-				"name":          "fake",
-				"native_mode":   "fake-isolated",
-				"policy_digest": "x",
-			},
-		},
-		"run_summary":        map[string]any{},
-		"assertion_analysis": []any{},
+		"schema_version": "2", "security": map[string]any{}, "run_summary": map[string]any{}, "assertion_analysis": []any{}, "unexpected": true,
 	}
 	if err := Validate("benchmark", artifact); err == nil {
 		t.Fatal("Validate() accepted an artifact outside benchmark.schema.json")
@@ -29,98 +15,58 @@ func TestValidateRejectsArtifactOutsideCheckedInSchema(t *testing.T) {
 }
 
 func TestTimingSchemaRequiresMeasuredAttemptErrors(t *testing.T) {
-	t.Parallel()
-
 	artifact := map[string]any{
-		"schema_version": "1",
-		"total_tokens":   0,
-		"duration_ms":    25,
-		"attempt_count":  2,
-		"attempt_errors": []any{
-			map[string]any{
-				"attempt":      1,
-				"error":        "transport failed",
-				"timestamp":    time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC),
-				"duration_ms":  25,
-				"stdout_bytes": 120,
-				"stderr_bytes": 40,
-			},
-		},
+		"schema_version": "1", "total_tokens": 0, "duration_ms": 25, "attempt_count": 2,
+		"attempt_errors": []any{map[string]any{"attempt": 1, "error": "transport failed", "timestamp": time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC), "duration_ms": 25, "stdout_bytes": 120, "stderr_bytes": 40}},
 	}
 	if err := Validate("timing", artifact); err != nil {
-		t.Fatalf("Validate() rejected measured timing artifact: %v", err)
+		t.Fatalf("Validate(timing) rejected measured retry: %v", err)
 	}
 	delete(artifact["attempt_errors"].([]any)[0].(map[string]any), "timestamp")
 	if err := Validate("timing", artifact); err == nil {
-		t.Fatal("Validate() accepted an attempt error without a timestamp")
+		t.Fatal("Validate(timing) accepted an attempt error without a timestamp")
 	}
 }
 
 func TestTriggerApplicationSchemaRejectsContradictoryVerdict(t *testing.T) {
-	t.Parallel()
-
-	artifact := map[string]any{
-		"schema_version": "1",
-		"target_read":    true,
-		"verdict":        "declined",
-		"applied":        false,
-		"evidence":       "The agent explicitly declined the skill.",
-	}
+	artifact := map[string]any{"schema_version": "1", "target_read": true, "verdict": "declined", "applied": false, "evidence": "The agent declined the skill."}
 	if err := Validate("trigger-application", artifact); err != nil {
-		t.Fatalf("Validate() rejected a consistent trigger application artifact: %v", err)
+		t.Fatalf("Validate(trigger-application) rejected a consistent artifact: %v", err)
 	}
 	artifact["applied"] = true
 	if err := Validate("trigger-application", artifact); err == nil {
-		t.Fatal("Validate() accepted a declined verdict marked as applied")
+		t.Fatal("Validate(trigger-application) accepted a contradictory artifact")
 	}
 }
 
-func TestAbsenceSchemasAcceptDeclaredPatternsAndFallbackClaims(t *testing.T) {
-	t.Parallel()
-
-	evals := map[string]any{
-		"skill_name": "demo",
-		"evals": []any{map[string]any{
-			"id":              "absence",
-			"prompt":          "check the workspace",
-			"expected_output": "the check completes",
-			"assertions": []any{map[string]any{
-				"text":               "The response does not set the commit author.",
-				"forbidden_patterns": []any{"git config user.name"},
-			}},
-		}},
-	}
-	if err := Validate("evals", evals); err != nil {
-		t.Fatalf("Validate(evals) rejected declared absence patterns: %v", err)
-	}
-
+func TestReferenceGradingSchemaUsesFreeFormEvidence(t *testing.T) {
 	grading := map[string]any{
-		"assertion_results": []any{
-			map[string]any{
-				"text":     "The response does not set the commit author.",
-				"passed":   true,
-				"evidence": "No commit was made.",
-				"evidence_references": []any{map[string]any{
-					"path": "response.md", "start_line": 1, "end_line": 1,
-				}},
-				"absence": map[string]any{
-					"negated_clause": "does not set the commit author",
-					"query":          "git config user.name",
-					"rationale":      "The query checks author configuration.",
-				},
-			},
-			map[string]any{
-				"text":     "The response does not set the commit author.",
-				"passed":   true,
-				"evidence": `Observed "No commit was made."`,
-				"absence": map[string]any{
-					"forbidden_patterns": []any{"git config user.name"},
-				},
-			},
+		"expectations": []any{
+			map[string]any{"text": "The response is useful.", "passed": true, "evidence": "A generic judge observation."},
+			map[string]any{"text": "The response is safe.", "passed": false, "evidence": "The judge found the requirement unmet."},
 		},
-		"summary": map[string]any{"passed": 2, "failed": 0, "total": 2, "pass_rate": 1.0},
+		"summary": map[string]any{"passed": 1, "failed": 1, "total": 2, "pass_rate": 0.5},
 	}
 	if err := Validate("grading", grading); err != nil {
-		t.Fatalf("Validate(grading) rejected fallback/pattern absence receipts: %v", err)
+		t.Fatalf("Validate(grading) rejected reference-shaped grading: %v", err)
+	}
+	grading["assertion_results"] = grading["expectations"]
+	delete(grading, "expectations")
+	if err := Validate("grading", grading); err == nil {
+		t.Fatal("Validate(grading) accepted the removed assertion_results shape")
+	}
+}
+
+func TestEvalSchemaRejectsGroundingExtensions(t *testing.T) {
+	evals := map[string]any{
+		"skill_name": "demo",
+		"evals":      []any{map[string]any{"id": "one", "prompt": "do it", "expected_output": "done", "assertions": []any{"The result is useful."}}},
+	}
+	if err := Validate("evals", evals); err != nil {
+		t.Fatalf("Validate(evals) rejected reference-shaped evals: %v", err)
+	}
+	evals["evals"].([]any)[0].(map[string]any)["required_actions"] = []any{"file_change"}
+	if err := Validate("evals", evals); err == nil {
+		t.Fatal("Validate(evals) accepted removed required_actions")
 	}
 }

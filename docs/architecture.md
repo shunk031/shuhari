@@ -2,6 +2,12 @@
 
 Shuhari separates the Agent Skills evaluation mechanism from repository-specific gate policy and agent-specific runtime behavior. Maintainers should use these boundaries to decide whether new behavior belongs in Shuhari, a consuming repository, or an agent adapter.
 
+The intended readers are maintainers and gate operators. The outcome is a fresh,
+auditable with/without evaluation: each side is graded in a blinded workspace,
+the comparator remains blind, and security, timing, grading, and benchmark
+receipts explain the certification result. The detailed grading rules live in
+[`docs/grading-contract.md`](grading-contract.md).
+
 ## Responsibility boundaries
 
 Shuhari owns:
@@ -11,7 +17,7 @@ Shuhari owns:
 - agent invocation through a narrow harness and an agent-neutral execution-security contract;
 - blind assertion grading and A/B comparison;
 - durable output, transcript, timing, grading, benchmark, and failure artifacts;
-- per-case trial aggregation that tolerates minority variance, and cache entries only for passing results.
+- per-case trial aggregation that tolerates minority variance.
 
 The consuming repository owns:
 
@@ -30,7 +36,6 @@ Two integration boundaries remain open. The staged-target wrapper that maps pre-
 .
 ├── cmd/shuhari/
 └── internal/
-    ├── cache/
     ├── cli/
     ├── eval/
     │   └── prompts/
@@ -45,7 +50,6 @@ Two integration boundaries remain open. The staged-target wrapper that maps pre-
 - `internal/eval` loads skill or instructions cases, stages fixtures, runs candidate/baseline pairs, grades them, aggregates trials, and writes the Agent Skills workspace.
 - `internal/trigger` loads near-miss and positive cases, records consultation, judges application, applies trigger policy, and writes trigger evidence.
 - `internal/harness` defines the agent-neutral request, result, and security-resolution boundary and contains the Codex adapter. It gives the Codex client an isolated `CODEX_HOME`, gives model-generated commands a separate minimal environment, invokes `codex exec --ephemeral --json`, and parses structured events.
-- `internal/cache` stores only successful results. Cache keys include the runner binary so evaluator changes invalidate prior results.
 
 There is no public Go SDK or dynamic plugin registry. A new agent is added as a concrete harness implementation only after it passes the adapter conformance suite. The CLI schemas, workspace layout, and repository policy remain independent of that adapter.
 
@@ -55,12 +59,12 @@ There is no public Go SDK or dynamic plugin registry. A new agent is added as a 
 2. The engine resolves run and judge security, then completes the adapter preflight before creating a workspace.
 3. The engine creates a new `iteration-N` directory and schedules a bounded number of candidate/baseline runs.
 4. Every run receives a fresh temporary Git repository and isolated agent home. Fixtures are copied into the repository; evaluator-only fields such as `expected_output` are not included in the run prompt. Produced files and the final response are copied into the durable workspace.
-5. A per-side judge agent receives only a blind label and assertions, then reads one copied artifact tree in a read-only workspace. Its positional file/line evidence is checked against the same files before grades are accepted.
+5. A per-side judge agent receives only a blind label and assertions, then reads one copied artifact tree in its resolved judge workspace. Its free-form evidence is recorded as returned.
 6. A separate blind comparator remains prompt-rendered and receives the original task and both artifacts. Its unblinded mapping and decision are stored independently from assertion grades.
-7. Candidate assertion results are aggregated per case. The default is majority; `--strict-all-trials` requires all trials. Required actions always require every trial. The comparison also requires candidate wins to be at least baseline wins.
-8. `benchmark.json` records candidate-minus-baseline differences and assertion audit categories. A passing result enters the cache; a failure retains evidence but never enters the cache.
+7. Candidate assertion results are aggregated per case. The default is majority; `--strict-all-trials` requires all trials. The comparison also requires candidate wins to be at least baseline wins.
+8. `benchmark.json` records candidate-minus-baseline differences and assertion audit categories.
 
-Passing positive evidence is `strong` only when the judge's excerpt is byte-for-byte equal to the cited inclusive file/line span in the blinded artifact workspace. Missing, altered, paraphrased, normalized, or nonexistent spans fail closed. Negative assertions use eval-declared forbidden patterns first, then the clause-anchored absence query fallback; a match is a side-specific contradiction.
+Judge evidence is free-form supporting material and is recorded without matcher or threshold checks. Deterministic checks belong in verification scripts.
 
 Trigger checks record consultation separately from application. Read evidence accumulates only from successful pre-response commands that reference the target. The body is split into nonblank, byte-weighted chunks of at most 128 bytes; a read requires at least 90% cumulative coverage. A trial with no read is not applied. After a read, a structured judge using the trial's resolved security classifies the transcript as applied, declined, or ambiguous; ambiguity fails closed. A case passes when at least `floor(trials/2)+1` application outcomes match `should_trigger`; `--strict-all-trials` raises that requirement to every trial.
 
@@ -84,7 +88,7 @@ All modes strip known GitHub credential variables from child commands. This is o
 
 ### Adapter resolution and refusal
 
-An explicit `--sandbox` wins over `SHUHARI_SANDBOX`. `ResolveSecurity` returns one digest-bearing adapter mapping; the engine validates and reuses it for runs, artifacts, and cache keys. `Probe` checks the native sandbox before workspace creation. Unsupported mappings or hosts return `ErrUnsupportedSecurityPolicy`; Shuhari never degrades.
+An explicit `--sandbox` wins over `SHUHARI_SANDBOX`. `ResolveSecurity` returns one digest-bearing adapter mapping; the engine validates and reuses it for runs and judge workspaces. `Probe` checks the native sandbox before workspace creation. Unsupported mappings or hosts return `ErrUnsupportedSecurityPolicy`; Shuhari never degrades.
 
 Judges use resolved `read-only` without network for protected execution. When
 the evaluated execution is explicitly acknowledged `unsandboxed`, the judge
@@ -98,7 +102,7 @@ a positive claim.
 
 ### Security provenance
 
-Schema-v2 manifests and evaluation verdicts record the neutral level, network access, credential boundary, adapter, native mode, and policy digest; trigger verdicts use schema v3. Evaluation manifests also record `judge_security`. The v2 cache key includes both resolutions, adapter and runner identity, suite inputs, configuration, and judge prompts.
+Schema-v2 manifests let operators verify the exact security boundary and prompt identity used for a run: they record the neutral level, network access, credential boundary, adapter, native mode, policy digest, `judge_security`, and grader/comparator prompt digests. Trigger verdicts use schema v3.
 
 ## Codex adapter
 
@@ -116,7 +120,7 @@ Codex cancels and retries an attempt with no model item after 90 seconds. Set `S
 
 - `Capabilities` declares skill, instructions, and trigger-evidence support.
 - `ResolveSecurity` returns an exact mapping or `ErrUnsupportedSecurityPolicy`.
-- `Probe` verifies the supplied resolutions on the host and returns cache identity.
+- `Probe` verifies the supplied resolutions on the host before work begins.
 - `Run` starts a clean context and returns response, transcript, usage, timing, read evidence, and actions.
 
 The adapter owns native flags, state isolation, retries, event parsing, and conformance proof. Repository gate policy stays outside it.
@@ -132,9 +136,14 @@ An adapter is selectable only after tests prove:
 
 CI runs these probes against the real Codex child sandbox for both protected levels and both network states. Credential, filesystem, and network mutations must make the suite fail.
 
-## Action evidence
+## Trigger evidence
 
-Native successful actions retain their trace order. Shuhari also compares the workspace before and after the run so shell writes such as `cp` and redirection satisfy `file_change`. Because a final workspace diff cannot identify which command made the change, that evidence is marked order-unknown rather than appended to the trace. Required-action matching accepts it in any slot that is consistent with the known trace order. This proves that a file change occurred, but not whether it happened before or after another action; cases that require that exact relationship need native ordered evidence. Standard `gh api`, `gh search`, `gh repo`, and `gh browse` commands satisfy `github_search` without requiring a literal GitHub URL.
+Trigger checks retain ordered transcript evidence for `target_read` and record
+the separate judge decision as `target_applied`. A positive application case
+passes only when both the read and application policies are satisfied; a
+negative control must not apply the skill. The trigger subsystem keeps its
+mechanical read coverage and blind application verdict independently of
+evaluation grading.
 
 ## Documentation growth
 

@@ -18,4 +18,4 @@ Write cases that isolate one observable behavior and provide every input they ne
 
 ## Evidence
 
-- Judges cite what they read with relative file paths and inclusive line spans. Positive evidence must copy the cited bytes exactly; absence claims use eval-declared forbidden patterns or the structured fallback described in the [grading contract](grading-contract.md).
+- Judges record concise free-form evidence, such as a quote or file reference. Shuhari stores it as returned; deterministic checks belong in verification scripts.

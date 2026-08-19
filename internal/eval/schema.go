@@ -39,46 +39,12 @@ func (id *caseID) UnmarshalJSON(contents []byte) error {
 	return nil
 }
 
-type rawAssertion struct {
-	Text              string
-	ForbiddenPatterns []string
-}
-
-func (assertion *rawAssertion) UnmarshalJSON(contents []byte) error {
-	var text string
-	if err := json.Unmarshal(contents, &text); err == nil {
-		assertion.Text = text
-		assertion.ForbiddenPatterns = nil
-		return nil
-	}
-	var object struct {
-		Text              string   `json:"text"`
-		ForbiddenPatterns []string `json:"forbidden_patterns"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(contents))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&object); err != nil {
-		return errors.New("assertion must be a string or an object with text")
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return errors.New("assertion contains trailing JSON")
-		}
-		return fmt.Errorf("decode assertion: %w", err)
-	}
-	assertion.Text = object.Text
-	assertion.ForbiddenPatterns = object.ForbiddenPatterns
-	return nil
-}
-
 type rawCase struct {
-	ID              caseID           `json:"id"`
-	Prompt          string           `json:"prompt"`
-	ExpectedOutput  string           `json:"expected_output"`
-	Files           []string         `json:"files"`
-	Assertions      []rawAssertion   `json:"assertions"`
-	RequiredActions []harness.Action `json:"required_actions"`
+	ID             caseID   `json:"id"`
+	Prompt         string   `json:"prompt"`
+	ExpectedOutput string   `json:"expected_output"`
+	Files          []string `json:"files"`
+	Assertions     []string `json:"assertions"`
 }
 
 func LoadSkillSuite(skillPath string) (Suite, error) {
@@ -202,46 +168,14 @@ func validateCases(root string, raw []rawCase) ([]Case, error) {
 			}
 		}
 		assertions := make([]string, 0, len(item.Assertions))
-		var forbiddenPatterns map[string][]string
 		for _, assertion := range item.Assertions {
-			text := strings.TrimSpace(assertion.Text)
+			text := strings.TrimSpace(assertion)
 			if text == "" {
 				return nil, fmt.Errorf("evals[%d].assertions contains an empty assertion", index)
 			}
-			if len(assertion.ForbiddenPatterns) == 0 {
-				assertions = append(assertions, text)
-				continue
-			}
-			if !absenceAssertionCuePattern.MatchString(text) {
-				return nil, fmt.Errorf("evals[%d].assertions %q declares forbidden_patterns without a negative assertion", index, text)
-			}
-			patterns := make([]string, 0, len(assertion.ForbiddenPatterns))
-			seenPatterns := map[string]bool{}
-			for _, pattern := range assertion.ForbiddenPatterns {
-				pattern = strings.TrimSpace(pattern)
-				if pattern == "" {
-					return nil, fmt.Errorf("evals[%d].assertions %q contains an empty forbidden pattern", index, text)
-				}
-				if seenPatterns[pattern] {
-					return nil, fmt.Errorf("evals[%d].assertions %q repeats forbidden pattern %q", index, text, pattern)
-				}
-				seenPatterns[pattern] = true
-				patterns = append(patterns, pattern)
-			}
-			if forbiddenPatterns == nil {
-				forbiddenPatterns = map[string][]string{}
-			}
-			forbiddenPatterns[text] = patterns
 			assertions = append(assertions, text)
 		}
-		for _, action := range item.RequiredActions {
-			switch action {
-			case harness.ActionWebSearch, harness.ActionGitHubSearch, harness.ActionFileChange:
-			default:
-				return nil, fmt.Errorf("evals[%d].required_actions contains unsupported action %q", index, action)
-			}
-		}
-		cases = append(cases, Case{ID: identifier, Prompt: item.Prompt, ExpectedOutput: item.ExpectedOutput, Files: item.Files, Assertions: assertions, ForbiddenPatterns: forbiddenPatterns, RequiredActions: item.RequiredActions})
+		cases = append(cases, Case{ID: identifier, Prompt: item.Prompt, ExpectedOutput: item.ExpectedOutput, Files: item.Files, Assertions: assertions})
 	}
 	return cases, nil
 }

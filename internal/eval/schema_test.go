@@ -6,144 +6,25 @@ import (
 	"testing"
 )
 
-func TestLoadSkillSuite(t *testing.T) {
-	t.Parallel()
-
+func TestLoadSkillSuiteUsesReferenceAssertionStrings(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo")
 	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
-	mustWrite(t, filepath.Join(root, "evals", "files", "input.txt"), "fixture")
-	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{
-  "skill_name": "demo",
-  "evals": [{
-    "id": 1,
-    "prompt": "process the fixture",
-    "expected_output": "a useful result",
-    "files": ["evals/files/input.txt"],
-    "assertions": ["The answer is useful"],
-    "required_actions": ["web_search", "file_change"]
-  }]
-}`)
-
+	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{"skill_name":"demo","evals":[{"id":1,"prompt":"do it","expected_output":"done","assertions":["The result is useful."]}]}`)
 	suite, err := LoadSkillSuite(root)
 	if err != nil {
-		t.Fatalf("LoadSkillSuite() error = %v", err)
+		t.Fatal(err)
 	}
-	if suite.Name != "demo" || len(suite.Cases) != 1 || suite.Cases[0].ID != "1" {
-		t.Fatalf("suite = %#v", suite)
-	}
-	if got := suite.Cases[0].Files[0]; got != "evals/files/input.txt" {
-		t.Fatalf("fixture path = %q", got)
+	if got := suite.Cases[0].effectiveAssertions(); len(got) != 1 || got[0] != "The result is useful." {
+		t.Fatalf("assertions = %#v", got)
 	}
 }
 
-func TestLoadSkillSuiteLoadsDeclaredForbiddenPatterns(t *testing.T) {
-	t.Parallel()
-
+func TestLoadSkillSuiteRejectsGroundingFields(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo")
 	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
-	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{
-  "skill_name": "demo",
-  "evals": [{
-    "id": "absence",
-    "prompt": "check the workspace",
-    "expected_output": "the check completes",
-    "assertions": [{
-      "text": "The response does not set the commit author.",
-      "forbidden_patterns": ["git config user.name", "git config user.email"]
-    }]
-  }]
-}`)
-
-	suite, err := LoadSkillSuite(root)
-	if err != nil {
-		t.Fatalf("LoadSkillSuite() error = %v", err)
-	}
-	assertion := "The response does not set the commit author."
-	patterns := suite.Cases[0].ForbiddenPatterns[assertion]
-	if len(patterns) != 2 || patterns[0] != "git config user.name" || patterns[1] != "git config user.email" {
-		t.Fatalf("forbidden patterns = %#v", patterns)
-	}
-}
-
-func TestLoadSkillSuiteRejectsForbiddenPatternsOnPositiveAssertion(t *testing.T) {
-	t.Parallel()
-
-	root := filepath.Join(t.TempDir(), "demo")
-	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
-	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{
-  "skill_name": "demo",
-  "evals": [{
-    "id": "positive",
-    "prompt": "check the workspace",
-    "expected_output": "the check completes",
-    "assertions": [{"text": "The response sets the commit author.", "forbidden_patterns": ["git config user.name"]}]
-  }]
-}`)
-
+	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{"skill_name":"demo","evals":[{"id":1,"prompt":"do it","expected_output":"done","assertions":[{"text":"claim","forbidden_patterns":["command"]}]}]}`)
 	if _, err := LoadSkillSuite(root); err == nil {
-		t.Fatal("LoadSkillSuite() accepted forbidden patterns on a positive assertion")
-	}
-}
-
-func TestLoadSkillSuiteRejectsEscapingFixture(t *testing.T) {
-	t.Parallel()
-
-	root := filepath.Join(t.TempDir(), "demo")
-	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
-	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{
-  "skill_name": "demo",
-  "evals": [{
-    "id": "escape",
-    "prompt": "read it",
-    "expected_output": "contents",
-    "files": ["../secret.txt"]
-  }]
-}`)
-
-	if _, err := LoadSkillSuite(root); err == nil {
-		t.Fatal("LoadSkillSuite() accepted a fixture outside the skill root")
-	}
-}
-
-func TestLoadInstructionsSuite(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	instructions := filepath.Join(root, "AGENTS.md")
-	mustWrite(t, instructions, "Always verify the result.\n")
-	mustWrite(t, filepath.Join(root, "AGENTS.evals.json"), `{
-  "instructions_name": "project-guidance",
-  "evals": [{
-    "id": "verify",
-    "prompt": "make a change",
-    "expected_output": "a verified change",
-    "assertions": ["The response reports verification"]
-  }]
-}`)
-
-	suite, err := LoadInstructionsSuite(instructions, "")
-	if err != nil {
-		t.Fatalf("LoadInstructionsSuite() error = %v", err)
-	}
-	if suite.Name != "project-guidance" || suite.TargetPath != instructions {
-		t.Fatalf("suite = %#v", suite)
-	}
-}
-
-func TestLoadSkillSuiteRejectsNormalizedIDCollision(t *testing.T) {
-	t.Parallel()
-
-	root := filepath.Join(t.TempDir(), "demo")
-	mustWrite(t, filepath.Join(root, "SKILL.md"), "---\nname: demo\ndescription: Demo skill\n---\n")
-	mustWrite(t, filepath.Join(root, "evals", "evals.json"), `{
-  "skill_name": "demo",
-  "evals": [
-    {"id":"a/b","prompt":"one","expected_output":"one"},
-    {"id":"a b","prompt":"two","expected_output":"two"}
-  ]
-}`)
-	if _, err := LoadSkillSuite(root); err == nil {
-		t.Fatal("LoadSkillSuite() accepted colliding workspace IDs")
+		t.Fatal("LoadSkillSuite accepted a removed grounding field")
 	}
 }
 

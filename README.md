@@ -78,7 +78,7 @@ Then run:
 shuhari eval skill path/to/csv-analyzer
 ```
 
-Each case runs with and without the skill in fresh sandboxed workspaces, a grader checks the assertions with evidence, and a blind comparator picks the more useful output. Results land in an iteration workspace next to the skill:
+Each case runs with and without the skill in fresh sandboxed workspaces, a grader records assertion decisions with free-form evidence, and a blind comparator picks the more useful output. Results land in an iteration workspace next to the skill:
 
 ```text
 csv-analyzer-workspace/
@@ -148,9 +148,9 @@ Exit status: `0` pass, `1` evaluation or trigger failure, `2` invalid input or e
 
 ### Configure evaluation runs
 
-Runs are sandboxed and offline by default; pass `--network` for cases that need it. Successful runs are cached (`--no-cache` forces a fresh run); failures keep their evidence and are never cached.
+Runs are sandboxed and offline by default; pass `--network` for cases that need it. Every run writes a fresh iteration with timing, grading, comparison, benchmark, and failure receipts.
 
-Credential handling is documented in the [credential boundary](docs/architecture.md#credential-boundary) and the `required_actions` contract in [action evidence](docs/architecture.md#action-evidence). If the agent's sandbox cannot start but the environment is already isolated (a CI runner or container), disable it explicitly — Shuhari refuses this without the acknowledgement and labels the verdict:
+Credential handling is documented in the [credential boundary](docs/architecture.md#credential-boundary). If the agent's sandbox cannot start but the environment is already isolated (a CI runner or container), disable it explicitly — Shuhari refuses this without the acknowledgement and labels the verdict:
 
 ```sh
 SHUHARI_SANDBOX=unsandboxed \

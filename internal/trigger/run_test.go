@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shunk031/shuhari/internal/cache"
 	"github.com/shunk031/shuhari/internal/harness"
 )
 
@@ -99,7 +98,7 @@ func TestRunPersistsTriggerTransportRetryEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	attempts := harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{fakeTriggerAttemptError(1, "stream disconnected before completion")}}
-	report, err := Run(context.Background(), suite, &triggerHarness{attempts: attempts}, cache.Store{Root: t.TempDir()}, Config{Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), NoCache: true})
+	report, err := Run(context.Background(), suite, &triggerHarness{attempts: attempts}, Config{Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +131,7 @@ func TestRunChecksPositiveAndNegativeCases(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &triggerHarness{}
-	report, err := Run(context.Background(), suite, agent, cache.Store{Root: filepath.Join(t.TempDir(), "cache")}, Config{Trials: 3, Jobs: 2, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace")})
+	report, err := Run(context.Background(), suite, agent, Config{Trials: 3, Jobs: 2, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace")})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -181,50 +180,5 @@ func TestRunChecksPositiveAndNegativeCases(t *testing.T) {
 	}
 	if manifest.SchemaVersion != "2" || manifest.Security != summary.Security {
 		t.Fatalf("manifest security = %#v, trigger security = %#v", manifest.Security, summary.Security)
-	}
-}
-
-func TestRunCacheIncludesSandboxLevel(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "demo")
-	if err := os.MkdirAll(filepath.Join(root, "evals"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: demo\ndescription: Demo\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	contents := `{"skill_name":"demo","cases":[{"id":"yes","prompt":"relevant","should_trigger":true},{"id":"no","prompt":"near miss","should_trigger":false}]}`
-	if err := os.WriteFile(filepath.Join(root, "evals", "triggers.json"), []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	suite, err := LoadSuite(root, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent := &triggerHarness{}
-	store := cache.Store{Root: filepath.Join(t.TempDir(), "cache")}
-	config := Config{Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), SandboxLevel: "isolated"}
-	if _, err := Run(context.Background(), suite, agent, store, config); err != nil {
-		t.Fatal(err)
-	}
-	config.SandboxLevel = "read-only"
-	report, err := Run(context.Background(), suite, agent, store, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Cached || agent.runs != 6 {
-		t.Fatalf("sandbox change reused stale cache: cached=%v runs=%d", report.Cached, agent.runs)
-	}
-	summaryContents, err := os.ReadFile(filepath.Join(report.Workspace, "trigger.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var summary struct {
-		Security harness.SecurityResolution `json:"security"`
-	}
-	if err := json.Unmarshal(summaryContents, &summary); err != nil {
-		t.Fatal(err)
-	}
-	if summary.Security.CredentialBoundary != harness.CredentialBoundaryEnforced || summary.Security.SandboxLevel != harness.SandboxReadOnly {
-		t.Fatalf("read-only trigger security = %#v", summary.Security)
 	}
 }

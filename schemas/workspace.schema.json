@@ -9,7 +9,6 @@
     "target_kind": { "enum": ["skill", "instructions"] },
     "target_name": { "type": "string", "minLength": 1 },
     "suite_digest": { "type": "string", "minLength": 1 },
-    "runner_digest": { "type": "string", "minLength": 1 },
     "agent_identity": { "type": "object" },
     "config": { "type": "object" },
     "security": { "$ref": "#/$defs/security" },
@@ -17,7 +16,7 @@
     "grader_prompt_digest": { "type": "string", "minLength": 1 },
     "comparator_prompt_digest": { "type": "string", "minLength": 1 }
   },
-  "required": ["schema_version", "created_at", "target_kind", "target_name", "suite_digest", "runner_digest", "agent_identity", "config", "security"],
+  "required": ["schema_version", "created_at", "target_kind", "target_name", "suite_digest", "agent_identity", "config", "security"],
   "additionalProperties": false,
   "$defs": {
     "security": {
