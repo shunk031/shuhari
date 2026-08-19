@@ -177,3 +177,49 @@ func TestMalformedComparatorResponseFailsClosed(t *testing.T) {
 		t.Fatalf("runComparatorsPerTrial() error = %v, want decode failure", err)
 	}
 }
+
+func TestJudgePipelinesAndGradeRunsAcceptWellFormedResponses(t *testing.T) {
+	root := t.TempDir()
+	withOutputs := filepath.Join(root, "with", "outputs")
+	withoutOutputs := filepath.Join(root, "without", "outputs")
+	mustWrite(t, filepath.Join(withOutputs, "response.md"), "candidate output\n")
+	mustWrite(t, filepath.Join(withoutOutputs, "response.md"), "baseline output\n")
+	input := trialJudgeInputs{
+		ID: "one", Trial: 1, AOutputPath: withOutputs, BOutputPath: withoutOutputs,
+		Assertions: []string{"The result is useful."},
+		Comparator: comparatorInput{ID: "one", Trial: 1, A: "candidate output", B: "baseline output"},
+	}
+	agent := &evalHarness{}
+	graderEntries, _, retries, err := runGradersPerTrial(context.Background(), agent, []trialJudgeInputs{input}, Config{Timeout: time.Second}, harness.SecurityResolution{})
+	if err != nil || len(graderEntries) != 1 || len(retries) != 2 {
+		t.Fatalf("runGradersPerTrial() = %#v, retries=%#v, err=%v", graderEntries, retries, err)
+	}
+	comparatorEntries, _, comparatorRetries, err := runComparatorsPerTrial(context.Background(), agent, []trialJudgeInputs{input}, Config{Timeout: time.Second}, harness.SecurityResolution{})
+	if err != nil || comparatorEntries[caseTrialKey("one", 1)].Preferred != "A" || len(comparatorRetries) != 1 {
+		t.Fatalf("runComparatorsPerTrial() = %#v, retries=%#v, err=%v", comparatorEntries, comparatorRetries, err)
+	}
+
+	suite := Suite{Kind: harness.TargetSkill, Cases: []Case{{ID: "one", ExpectedOutput: "The result is useful."}}}
+	iteration := filepath.Join(root, "iteration")
+	if err := os.MkdirAll(iteration, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	results := []runResult{
+		{Case: suite.Cases[0], Trial: 1, Variant: variantWithSkill, RunDir: filepath.Join(root, "with"), OutputPath: withOutputs, Artifact: "candidate output", Agent: harness.Result{Response: "candidate output"}},
+		{Case: suite.Cases[0], Trial: 1, Variant: variantWithoutSkill, RunDir: filepath.Join(root, "without"), OutputPath: withoutOutputs, Artifact: "baseline output", Agent: harness.Result{Response: "baseline output"}},
+	}
+	graded, candidateWins, baselineWins, _, _, err := gradeRuns(context.Background(), agent, suite, results, Config{Trials: 1, Timeout: time.Second}, harness.SecurityResolution{}, iteration)
+	if err != nil || len(graded) != 2 || candidateWins != 1 || baselineWins != 0 {
+		t.Fatalf("gradeRuns() = graded=%#v candidate=%d baseline=%d err=%v", graded, candidateWins, baselineWins, err)
+	}
+	for _, path := range []string{
+		filepath.Join(root, "with", "grading.json"),
+		filepath.Join(root, "without", "grading.json"),
+		filepath.Join(root, "iteration", "eval-one", "comparison.json"),
+		filepath.Join(root, "iteration", "judge-retries.json"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("missing grade artifact %s: %v", path, err)
+		}
+	}
+}
