@@ -16,13 +16,11 @@ type Suite struct {
 }
 
 type Case struct {
-	ID                string              `json:"id"`
-	Prompt            string              `json:"prompt"`
-	ExpectedOutput    string              `json:"expected_output"`
-	Files             []string            `json:"files,omitempty"`
-	Assertions        []string            `json:"assertions,omitempty"`
-	ForbiddenPatterns map[string][]string `json:"-"`
-	RequiredActions   []harness.Action    `json:"required_actions,omitempty"`
+	ID             string   `json:"id"`
+	Prompt         string   `json:"prompt"`
+	ExpectedOutput string   `json:"expected_output"`
+	Files          []string `json:"files,omitempty"`
+	Assertions     []string `json:"assertions,omitempty"`
 }
 
 func (c Case) effectiveAssertions() []string {
@@ -44,12 +42,10 @@ type Config struct {
 	Network              bool          `json:"network"`
 	Workspace            string        `json:"-"`
 	StrictAllTrials      bool          `json:"strict_all_trials"`
-	NoCache              bool          `json:"-"`
 }
 
 type Report struct {
 	Passed       bool
-	Cached       bool
 	Workspace    string
 	FailureCount int
 	Reasons      []string
@@ -65,31 +61,10 @@ type runResult struct {
 	Artifact   string
 }
 
-type AbsenceClaim struct {
-	NegatedClause     string   `json:"negated_clause,omitempty"`
-	Query             string   `json:"query,omitempty"`
-	Rationale         string   `json:"rationale,omitempty"`
-	ForbiddenPatterns []string `json:"forbidden_patterns,omitempty"`
-}
-
 type AssertionResult struct {
-	Text                         string              `json:"text"`
-	Passed                       bool                `json:"passed"`
-	Evidence                     string              `json:"evidence"`
-	EvidenceReferences           []EvidenceReference `json:"evidence_references,omitempty"`
-	Absence                      *AbsenceClaim       `json:"absence,omitempty"`
-	EvidenceGrounding            string              `json:"evidence_grounding,omitempty"`
-	EvidenceGroundingScore       float64             `json:"evidence_grounding_score,omitempty"`
-	EvidenceGroundingSpan        string              `json:"evidence_grounding_span,omitempty"`
-	EvidenceGroundingObservation string              `json:"evidence_grounding_observation,omitempty"`
-}
-
-// EvidenceReference identifies the exact source lines copied into Evidence.
-// Paths are relative to the blinded artifact workspace exposed to the judge.
-type EvidenceReference struct {
-	Path      string `json:"path"`
-	StartLine int    `json:"start_line"`
-	EndLine   int    `json:"end_line"`
+	Text     string `json:"text"`
+	Passed   bool   `json:"passed"`
+	Evidence string `json:"evidence"`
 }
 
 type GradingSummary struct {
@@ -100,7 +75,7 @@ type GradingSummary struct {
 }
 
 type Grading struct {
-	AssertionResults []AssertionResult `json:"assertion_results"`
+	AssertionResults []AssertionResult `json:"expectations"`
 	Summary          GradingSummary    `json:"summary"`
 }
 

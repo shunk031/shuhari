@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shunk031/shuhari/internal/cache"
 	"github.com/shunk031/shuhari/internal/harness"
 )
 
@@ -133,8 +132,8 @@ func TestRunClassifiesApplicationInsteadOfConsultation(t *testing.T) {
 			"required service-check workflow": "The agent followed the skill-specific service-check workflow.",
 		},
 	}
-	report, err := Run(context.Background(), suite, agent, cache.Store{Root: t.TempDir()}, Config{
-		Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), NoCache: true,
+	report, err := Run(context.Background(), suite, agent, Config{
+		Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"),
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -193,8 +192,8 @@ func TestRunFailsClosedOnAmbiguousApplication(t *testing.T) {
 			"outside the demo service scope":  "The transcript contains conflicting signals.",
 		},
 	}
-	report, err := Run(context.Background(), suite, agent, cache.Store{Root: t.TempDir()}, Config{
-		Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), NoCache: true,
+	report, err := Run(context.Background(), suite, agent, Config{
+		Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "application verdict is ambiguous") {
 		t.Fatalf("Run() error = %v, want ambiguous application refusal", err)
@@ -222,8 +221,8 @@ func TestRunRecordsApplicationJudgeTransportExhaustion(t *testing.T) {
 			Attempts: harness.AttemptEvidence{AttemptCount: 3, AttemptErrors: attemptErrors},
 		},
 	}
-	report, err := Run(context.Background(), suite, agent, cache.Store{Root: t.TempDir()}, Config{
-		Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"), NoCache: true,
+	report, err := Run(context.Background(), suite, agent, Config{
+		Trials: 1, Jobs: 1, Timeout: time.Second, Workspace: filepath.Join(t.TempDir(), "workspace"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "run application judge") {
 		t.Fatalf("Run() error = %v, want application judge transport error", err)

@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shunk031/shuhari/internal/cache"
 	"github.com/shunk031/shuhari/internal/harness"
 	"github.com/shunk031/shuhari/internal/receipt"
 	"github.com/shunk031/shuhari/internal/skill"
@@ -122,7 +121,7 @@ func LoadSuite(skillPath, casesPath string) (Suite, error) {
 	return Suite{SkillName: metadata.Name, Cases: cases, SkillPath: absolute, CasesPath: casesPath}, nil
 }
 
-func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.Store, config Config) (Report, error) {
+func Run(ctx context.Context, suite Suite, agent harness.Harness, config Config) (Report, error) {
 	if config.Trials < 1 || config.Jobs < 1 || config.Timeout <= 0 {
 		return Report{}, errors.New("trials, jobs, and timeout must be positive")
 	}
@@ -150,30 +149,11 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	if err != nil {
 		return Report{}, err
 	}
-	runnerDigest, err := cache.RunnerDigest()
-	if err != nil {
-		return Report{}, err
-	}
-	options, _ := json.Marshal(struct {
-		Digest       string
-		RunnerDigest string
-		Identity     harness.Identity
-		Config       Config
-		Security     harness.SecurityResolution
-	}{Digest: digest, RunnerDigest: runnerDigest, Identity: identity, Config: config, Security: security})
-	key := cache.Key(options)
-	if !config.NoCache {
-		if record, ok, err := store.GetSuccess(key); err != nil {
-			return Report{}, err
-		} else if ok {
-			return Report{Passed: true, Cached: true, Workspace: record.Workspace}, nil
-		}
-	}
 	iteration, err := createIteration(suite, config.Workspace)
 	if err != nil {
 		return Report{}, err
 	}
-	if err := writeTriggerManifest(iteration, suite, digest, runnerDigest, identity, config, security); err != nil {
+	if err := writeTriggerManifest(iteration, suite, digest, identity, config, security); err != nil {
 		return Report{Workspace: iteration}, err
 	}
 	measurement, runErr := measure(ctx, suite, agent, config, security, iteration)
@@ -193,11 +173,6 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, store cache.St
 	}
 	if err := writeJSON(filepath.Join(iteration, "trigger.json"), summary); err != nil {
 		return report, err
-	}
-	if report.Passed && !config.NoCache {
-		if err := store.PutSuccess(key, cache.Record{Passed: true, CreatedAt: time.Now().UTC(), Workspace: iteration}); err != nil {
-			return report, err
-		}
 	}
 	return report, nil
 }
@@ -445,7 +420,7 @@ func digestSuite(suite Suite) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func writeTriggerManifest(iteration string, suite Suite, suiteDigest, runnerDigest string, identity harness.Identity, config Config, security harness.SecurityResolution) error {
+func writeTriggerManifest(iteration string, suite Suite, suiteDigest string, identity harness.Identity, config Config, security harness.SecurityResolution) error {
 	policy := harness.SecurityPolicy{Level: harness.SandboxLevel(config.SandboxLevel), Network: config.Network}
 	if err := harness.ValidateSecurityResolution(policy, security); err != nil {
 		return fmt.Errorf("validate manifest security: %w", err)
@@ -456,11 +431,10 @@ func writeTriggerManifest(iteration string, suite Suite, suiteDigest, runnerDige
 		TargetKind    harness.TargetKind         `json:"target_kind"`
 		TargetName    string                     `json:"target_name"`
 		SuiteDigest   string                     `json:"suite_digest"`
-		RunnerDigest  string                     `json:"runner_digest"`
 		AgentIdentity harness.Identity           `json:"agent_identity"`
 		Config        Config                     `json:"config"`
 		Security      harness.SecurityResolution `json:"security"`
-	}{SchemaVersion: triggerManifestSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: harness.TargetSkill, TargetName: suite.SkillName, SuiteDigest: suiteDigest, RunnerDigest: runnerDigest, AgentIdentity: identity, Config: config, Security: security}
+	}{SchemaVersion: triggerManifestSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: harness.TargetSkill, TargetName: suite.SkillName, SuiteDigest: suiteDigest, AgentIdentity: identity, Config: config, Security: security}
 	if err := contracts.Validate("workspace", manifest); err != nil {
 		return err
 	}

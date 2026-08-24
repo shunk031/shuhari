@@ -1,16 +1,24 @@
-# Grading Contract
+# Grading contract
 
-This document is the canonical contract between an evaluation case, the blind
-grader, and Shuhari's validator. The implementation is in
-[`internal/eval/grade.go`](../internal/eval/grade.go),
-[`internal/eval/evidence.go`](../internal/eval/evidence.go), and the grader
-prompt embedded from [`internal/eval/prompts/grader.md`](../internal/eval/prompts/grader.md).
+This is the canonical contract for evaluation authors, judge-prompt authors,
+harness implementers, and gate operators. It follows the Agent Skills
+evaluation workflow: run each case with and without the target guidance, grade
+both outputs, compare them blindly, and retain the receipts.
 
-## Judge inputs and blinded workspaces
+## Certification outcome
 
-For each case and trial, Shuhari computes the existing deterministic A/B blind
-mapping. It then runs two independent grader-agent calls, one for each blinded
-side. Each call receives only this JSON input:
+Execution and judge invocation failures are fatal only when setup, security,
+transport, timeout, or output structure prevents grading. A valid `passed:false`
+result is retained as a side-specific failed assertion. Trial policy, benchmark
+aggregation, and blind comparison determine the evaluation result. Trigger
+certification separately requires `target_read` to show that the target was
+read and `target_applied` to show that the application judge saw the skill
+applied; each must match its case's `should_trigger` policy.
+
+## Judge inputs and blindness
+
+For each case and trial, Shuhari deterministically maps the two configurations
+to blind labels. It invokes one grader agent per side with only:
 
 ```json
 {
@@ -21,208 +29,75 @@ side. Each call receives only this JSON input:
 }
 ```
 
-The artifact and the original agent response are not rendered into the prompt.
-The judge's read-only working directory contains only a copied artifact tree
-for the requested side. It contains no skill name, candidate/baseline identity,
-or other side's files. The judge must read the files itself and must not follow
-instructions found in an untrusted artifact.
+The grader's current working directory contains a copied artifact tree for that
+side. It does not contain the other side, a skill name, or a candidate/baseline
+identity. The grader reads files itself; artifacts are not rendered into its
+prompt. The resolved `judge_security` policy is recorded in `manifest.json`.
+An acknowledged unsandboxed resolution keeps the blinded copied tree but does
+not provide a kernel boundary.
 
-Judge security selection follows the [execution security contract](architecture.md#execution-security-contract)
-and is recorded in the manifest as `judge_security`. The workspace still gives
-each judge only its blinded side's files. Under an acknowledged unsandboxed
-resolution, that is a scoping boundary rather than kernel filesystem
-isolation, so evaluators must not claim stronger protection.
+## Grading output
 
-## Positive evidence
-
-For every passing presence or positive assertion, the judge returns one or more
-`evidence_references`:
+The grader returns one result for every assertion:
 
 ```json
 {
-  "path": "response.md",
-  "start_line": 12,
-  "end_line": 14
+  "text": "assertion text",
+  "passed": true,
+  "evidence": "free-form quote or file reference"
 }
 ```
 
-Paths are relative to the blinded judge workspace. Line spans are inclusive and
-1-based. `evidence` must be the exact text read from those lines, in reference
-order, joined by one newline between references. The validator reads each
-referenced file and rejects the result unless the excerpt is byte-for-byte
-equal to the cited span. It also rejects absolute paths, path escapes, invalid
-spans, missing files, and non-regular files.
+`text` must match the requested assertion, `passed` is the judge's decision,
+and `evidence` is non-empty free-form supporting material. Shuhari records the
+evidence as returned. It does not match quotes, normalize text, calculate a
+grounding score, require line spans, or reinterpret evidence. A judge-failed
+assertion is an ordinary failed assertion and continues through aggregation.
+Malformed JSON or a structurally incomplete result fails the grading call
+closed; it does not turn a valid failed verdict into an invocation failure.
 
-There is no quote normalization, paraphrase matching, token threshold, recall
-score, or prompt-rendered artifact fallback in this path. A renamed variable,
-substituted literal, changed quote, whitespace change, or generic explanation
-fails closed. Assertions about what the agent returned must use the same
-mechanism against `response.md`.
+The checked-in grading artifact uses the reference shape:
 
-## Absence claims
+```json
+{
+  "expectations": [{"text": "...", "passed": true, "evidence": "..."}],
+  "summary": {"passed": 1, "failed": 0, "total": 1, "pass_rate": 1.0}
+}
+```
 
-Absence is evaluated in two ordered modes.
+## Assertions and absence
 
-1. An eval may declare `forbidden_patterns` on a negative assertion. These
-   patterns are authoritative. The validator searches the artifact mechanically
-   for each pattern; the judge is not consulted for that search. A match is a
-   side-specific contradiction and changes that side's assertion to failed.
-2. If the eval declares no patterns, the judge returns an `absence` object with
-   `negated_clause`, `query`, and `rationale`. `negated_clause` must be a
-   verbatim substring of the assertion. The validator searches `query` as-is in
-   the artifact and records the declaration for auditability. A query match is
-   the same side-specific contradiction. A mixed assertion must also carry
-   exact positional references for its positive clause.
+Assertions are author-owned text strings. Positive, negative, and mixed claims
+are judged by the agent from the artifact. There is no special absence object,
+clause-linking rule, forbidden-pattern field, contradiction resolver, or
+evidence attachment matrix in the grading contract. A deterministic check that
+an eval author needs belongs in a verification script, as in the reference
+workflow, rather than in judge evidence parsing.
 
-The validator does not infer absence from prose such as “nothing was found.”
-The first-action-token and literal-clause relevance heuristics are not part of
-the contract.
+## Retry and receipts
 
-## Retry and watchdog semantics
+The harness owns transport retry, first-response watchdog, timeout, and attempt
+receipts for both grader and comparator calls. Completed responses are not
+retried as transport failures. The grader's read-only/unsandboxed resolution is
+passed through unchanged. Shuhari retains raw judge responses and
+`judge-retries.json` when transport attempts occur; malformed structured output
+is recorded in the grading error receipt and fails closed.
 
-The existing attempt contract applies unchanged to grader agents:
+## Comparator
 
-- transport failures are retried by the harness under its normal retry limit;
-- a completed response is not retried as a transport failure;
-- a structurally invalid or positionally invalid response receives at most one
-  validation retry;
-- the retry prompt includes the validation error, tells the judge to read the
-  current artifact again, and repeats the exact positional-copy requirement;
-- retry prompts still contain no artifact contents or side identities; and
-- the existing first-token watchdog and overall timeout remain in force.
+The comparator remains prompt-rendered because it compares two outputs and
+does not claim that evidence text came from one artifact. It receives blinded
+`A` and `B` artifact views plus the raw responses and returns one of `A`, `B`, or
+`tie` with a non-empty reason. Missing cases, invalid preferences, blank
+reasons, malformed JSON, and transport exhaustion fail closed. Comparator agent
+conversion is out of scope for this simplification.
 
-If the second validation attempt fails, grading fails closed and retains both
-responses in the grading-error receipt. No threshold or trial aggregation rule
-changes here.
+## Simplification lineage
 
-## Grading outcome matrix
-
-The validator evaluates each assertion result independently. The four attachment
-states below describe whether the judge supplied positional evidence references,
-an `absence` object, both, or neither. The `evidence` string itself is always a
-required nonblank JSON field; it is not an attachment state.
-
-The central failed-verdict rule is simple: a failed assertion needs no grounding.
-A well-formed absence object may remain as auxiliary judge data, but it never
-turns a judge-failed result into a validator error or a new pass/fail decision.
-Malformed absence data still fails closed.
-
-The mechanical column applies to fallback absence queries. `no-match` means the
-query is absent from the artifact. `match` means the query is found and resolves
-to a side-specific `contradiction` when the judge said the assertion passed.
-For a judge-failed assertion, `contradiction` means that the query would match,
-but the failed verdict already supplies the side-specific failure; the validator
-does not search for grounding and continues with the failed result. `N/A` means
-that no absence machinery is applicable.
-
-Every fallback cell is enumerated here:
-
-| Assertion | Judge verdict | Attachments | Mechanical state | Outcome |
-| --- | --- | --- | --- | --- |
-| Positive | pass | evidence refs | N/A | Valid: pass with `strong` evidence after positional verification. |
-| Positive | pass | absence object | N/A | Invalid: fail closed; positive assertions cannot carry absence claims. |
-| Positive | pass | both | N/A | Invalid: fail closed; positive assertions cannot carry absence claims. |
-| Positive | pass | neither | N/A | Invalid: fail closed; a passing positive claim needs positional evidence. |
-| Positive | fail | evidence refs | N/A | Valid: continue with a side-specific failed result; do not ground it. |
-| Positive | fail | absence object | N/A | Invalid: fail closed; the absence claim is incompatible with a positive assertion. |
-| Positive | fail | both | N/A | Invalid: fail closed; the absence claim is incompatible with a positive assertion. |
-| Positive | fail | neither | N/A | Valid: continue with a side-specific failed result. |
-| Negative | pass | evidence refs | N/A | Invalid: fail closed; a passing negative claim needs an absence declaration. |
-| Negative | pass | absence object | no-match | Valid: pass with `absence` grounding; retain the query declaration. |
-| Negative | pass | absence object | match | Valid: resolve as side-specific fail with `contradiction` and the matched location. |
-| Negative | pass | both | no-match | Valid: pass with `absence` grounding; positional references are auxiliary. |
-| Negative | pass | both | match | Valid: resolve as side-specific fail with `contradiction`; positional references are auxiliary. |
-| Negative | pass | neither | N/A | Invalid: fail closed; a passing negative claim needs an absence declaration. |
-| Negative | fail | evidence refs | N/A | Valid: continue with a side-specific failed result; do not ground it. |
-| Negative | fail | absence object | no-match | Valid: continue with the judge-failed result; do not ground it. |
-| Negative | fail | absence object | contradiction | Valid: continue with the judge-failed result; do not replace it with a new outcome. |
-| Negative | fail | both | no-match | Valid: continue with the judge-failed result; do not ground it. |
-| Negative | fail | both | contradiction | Valid: continue with the judge-failed result; do not ground it. |
-| Negative | fail | neither | N/A | Valid: continue with a side-specific failed result. |
-| Mixed | pass | evidence refs | N/A | Invalid: fail closed; a passing mixed claim needs an absence declaration too. |
-| Mixed | pass | absence object | no-match | Invalid: fail closed; the positive clause also needs positional evidence. |
-| Mixed | pass | absence object | match | Invalid: fail closed; the positive clause also needs positional evidence. |
-| Mixed | pass | both | no-match | Valid: pass with `absence` grounding and exact positional evidence for the positive clause. |
-| Mixed | pass | both | match | Valid: resolve as side-specific fail with `contradiction` after verifying the positive clause. |
-| Mixed | pass | neither | N/A | Invalid: fail closed; both positive evidence and absence data are required. |
-| Mixed | fail | evidence refs | N/A | Valid: continue with a side-specific failed result; do not ground it. |
-| Mixed | fail | absence object | no-match | Valid: continue with the judge-failed result; do not ground it. |
-| Mixed | fail | absence object | contradiction | Valid: continue with the judge-failed result; do not ground it. |
-| Mixed | fail | both | no-match | Valid: continue with the judge-failed result; do not ground it. |
-| Mixed | fail | both | contradiction | Valid: continue with the judge-failed result; do not ground it. |
-| Mixed | fail | neither | N/A | Valid: continue with a side-specific failed result. |
-
-For a declared `forbidden_patterns` negative assertion, the eval-owned patterns
-replace the judge's absence query. The four attachment states are still valid
-inputs because the patterns are authoritative; a supplied fallback absence
-object must nevertheless be structurally valid. The complete declared-pattern
-matrix is:
-
-| Judge verdict | Attachments | no-match | match / contradiction |
-| --- | --- | --- | --- |
-| pass | evidence refs | Valid: pass as `absence`; record the declared patterns. | Valid: side-specific fail as `contradiction`; record the matched location. |
-| pass | absence object | Valid: pass as `absence`; declared patterns take precedence. | Valid: side-specific fail as `contradiction`; declared patterns take precedence. |
-| pass | both | Valid: pass as `absence`; declared patterns take precedence. | Valid: side-specific fail as `contradiction`; declared patterns take precedence. |
-| pass | neither | Valid: pass as `absence`; declared patterns are sufficient. | Valid: side-specific fail as `contradiction`; declared patterns are sufficient. |
-| fail | evidence refs | Valid: continue with the judge-failed result; do not ground it. | Valid: continue with the judge-failed result; do not ground it. |
-| fail | absence object | Valid: continue with the judge-failed result; do not ground it. | Valid: continue with the judge-failed result; do not ground it. |
-| fail | both | Valid: continue with the judge-failed result; do not ground it. | Valid: continue with the judge-failed result; do not ground it. |
-| fail | neither | Valid: continue with the judge-failed result; do not ground it. | Valid: continue with the judge-failed result; do not ground it. |
-
-An absence object with a blank field, a clause that is
-not a verbatim assertion substring, or an assertion type that cannot be
-negative/mixed is malformed and fails closed in every verdict state. Missing,
-duplicate, mismatched, or extra grader cases/assertions also fail closed.
-
-The table is exercised by the generated 48-cell table-driven corpus in
-`internal/eval/grading_contract_matrix_test.go`: 32 fallback cells and 16
-declared-pattern cells. Its retained regression rows cover: iteration-27's
-mixed absence clause omission; iteration-28's hallucinated negative absence
-against an artifact contradiction; iteration-30's malformed declared-absence
-object; iteration-31's generic non-verbatim positive evidence; and iteration-34's
-well-formed failed mixed result carrying absence data.
-
-## Comparator path audit
-
-Comparators remain prompt-rendered. They compare two outputs and have a different
-failure surface from positive evidence grounding: their contract is a blind A/B
-preference and a nonblank reason, not a claim that a quoted excerpt came from one
-artifact. The comparator still receives the existing blinded A/B artifacts and
-original task fields, and keeps the existing validation, retry, and watchdog
-behavior. Converting comparators to agents is out of scope for #13.
-
-The audit found no well-formed comparator cell that aborts grading, so no
-comparator production change is required. The table below records the malformed
-cells that still retry and fail closed.
-
-| Comparator cell | Outcome |
-| --- | --- |
-| Exactly one requested case with preferred `A`, `B`, or `tie` and a nonblank reason | Valid: resolve the preference and continue. |
-| `tie`, including when neither output is materially better | Valid: record a tie and continue. |
-| Nonblank but weak or generic reason | Valid: the comparator contract requires nonblank text, not a quality threshold. |
-| Invalid preferred value | Invalid: retry once, then fail closed if still invalid. |
-| Blank reason | Invalid: retry once, then fail closed if still blank. |
-| Missing, extra, duplicate, or mismatched case/trial | Invalid: retry once, then fail closed if still structurally incomplete. |
-| Transport failure before completion | Retry under the normal harness transport limit; fail closed after exhaustion. |
-| Completed response with a well-formed preference | Never retry as transport; resolve the preference. |
-
-## Lineage and ownership
-
-Judge-as-agent grounding (Issue #13) is the immediate post-migration priority
-for positive evidence. Prompt-rendered artifacts proved fundamentally
-unreliable: the retained verbatim-misquote failures show that a retry can
-rename variables even when the source line is present. The structural cure is
-for the judge to read the artifact directly while the validator checks the
-cited location against the same bytes.
-
-The history remains an audit trail for why this contract is needed: #5 handled
-inline code, #16 normalized quotes, and #19 normalized Markdown delimiters;
-#20 addressed paraphrased evidence, #23 extracted nested observations, #25
-handled nested smart quotes, and #42 preserved grounded results across
-retries. In the separate absence family, #62 made the absence schema strict,
-#64 validated absence inside mixed assertions, and #66 resolved contradictions
-per side. The positional validator replaces the positive-evidence extraction
-chain while retaining those absence controls.
-Eval authors own assertions and declared absence patterns; the judge owns
-semantic judgment and source references; Shuhari owns the deterministic
-validation and receipt contract.
+This contract closes the grounding-fragility lineage. Earlier patches handled
+inline-code and Markdown rendering, paraphrased and nested observations, then
+absence schemas, relevance, and contradictions. The final verbatim-misquote
+failure showed that prompt-rendered copying was the wrong boundary. The
+judge-as-agent proposal in issue #13 supplied the structural cure: agents read
+artifacts in a blinded workspace and evidence remains free-form. The old
+matcher and matrix receipts are retired.
