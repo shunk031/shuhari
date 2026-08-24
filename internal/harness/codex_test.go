@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1349,5 +1350,25 @@ func writeSkillFile(t *testing.T, root, relative, contents string) {
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSandboxProbeCommandRunsOnThisHost(t *testing.T) {
+	command := sandboxProbeCommand()
+	if len(command) == 0 {
+		t.Fatal("sandboxProbeCommand() returned no command")
+	}
+
+	// The preflight reports a failure here as "the sandbox cannot start", so a
+	// probe command that is merely missing would be misdiagnosed. Recent macOS
+	// ships no /bin/true, which is exactly how that happened.
+	if runtime.GOOS != "windows" {
+		if _, err := os.Stat(command[0]); err != nil {
+			t.Fatalf("sandbox probe executable %q is not present on this host: %v", command[0], err)
+		}
+	}
+
+	if err := exec.Command(command[0], command[1:]...).Run(); err != nil {
+		t.Fatalf("sandbox probe command %v did not succeed: %v", command, err)
 	}
 }

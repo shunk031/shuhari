@@ -94,6 +94,22 @@ func (h *codexHarness) Probe(ctx context.Context, securities ...SecurityResoluti
 	}, nil
 }
 
+// sandboxProbeCommand returns a command that exits zero and does nothing else.
+// The preflight only needs to learn whether the native sandbox starts, so the
+// command must succeed anywhere the sandbox itself can run.
+//
+// It deliberately avoids `/bin/true`: that path does not exist on every
+// platform, and recent macOS ships the binary only at `/usr/bin/true`, which
+// made the preflight fail there for a reason unrelated to the sandbox. POSIX
+// requires `/bin/sh`, and `:` is a shell builtin, so this depends on nothing
+// beyond the shell.
+func sandboxProbeCommand() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"cmd.exe", "/c", "exit", "0"}
+	}
+	return []string{"/bin/sh", "-c", ":"}
+}
+
 func (h *codexHarness) probeSandbox(ctx context.Context, security SecurityResolution) error {
 	temporary, err := secureTemporaryDirectory("shuhari-codex-probe-")
 	if err != nil {
@@ -110,12 +126,8 @@ func (h *codexHarness) probeSandbox(ctx context.Context, security SecurityResolu
 	if err := writeCodexProfile(codexHome, Request{WorkDir: workDir, Security: security}); err != nil {
 		return fmt.Errorf("write Codex sandbox preflight profile: %w", err)
 	}
-	commandArgs := []string{"/bin/true"}
-	if runtime.GOOS == "windows" {
-		commandArgs = []string{"cmd.exe", "/c", "exit", "0"}
-	}
 	args := []string{"sandbox", "--profile", "shuhari", "--permission-profile", "shuhari-eval", "--cd", workDir}
-	args = append(args, commandArgs...)
+	args = append(args, sandboxProbeCommand()...)
 	command := exec.CommandContext(ctx, h.executable, args...)
 	command.Env = cleanEnvironment(codexHome)
 	output, err := command.CombinedOutput()
