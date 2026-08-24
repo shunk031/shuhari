@@ -63,7 +63,7 @@ func LoadSkillSuite(skillPath string) (Suite, error) {
 	if err != nil {
 		return Suite{}, err
 	}
-	evalPath := filepath.Join(absolute, "evals", "evals.json")
+	evalPath := filepath.Join(absolute, harness.EvalDefinitionDir, "evals.json")
 	var raw struct {
 		SkillName string    `json:"skill_name"`
 		Evals     []rawCase `json:"evals"`

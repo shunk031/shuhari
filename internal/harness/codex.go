@@ -792,7 +792,7 @@ func installCodexTarget(workDir string, target Target) error {
 	switch target.Kind {
 	case TargetSkill:
 		destination := filepath.Join(workDir, ".agents", "skills", target.Name)
-		if err := copyTree(target.SourcePath, destination); err != nil {
+		if err := copyTreeExcluding(target.SourcePath, destination, isEvalDefinitionDir); err != nil {
 			return fmt.Errorf("install skill: %w", err)
 		}
 	case TargetInstructions:
@@ -809,7 +809,20 @@ func installCodexTarget(workDir string, target Target) error {
 	return nil
 }
 
+// isEvalDefinitionDir reports whether a skill-relative path is the directory
+// holding that skill's eval and trigger definitions.
+func isEvalDefinitionDir(relative string, entry fs.DirEntry) bool {
+	return entry.IsDir() && relative == EvalDefinitionDir
+}
+
 func copyTree(source, destination string) error {
+	return copyTreeExcluding(source, destination, nil)
+}
+
+// copyTreeExcluding copies source into destination. When exclude reports true
+// for a directory, that directory and everything beneath it is left out; when it
+// reports true for a file, that file is left out.
+func copyTreeExcluding(source, destination string, exclude func(relative string, entry fs.DirEntry) bool) error {
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -817,6 +830,12 @@ func copyTree(source, destination string) error {
 		relative, err := filepath.Rel(source, path)
 		if err != nil {
 			return err
+		}
+		if exclude != nil && exclude(relative, entry) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		target := filepath.Join(destination, relative)
 		info, err := entry.Info()

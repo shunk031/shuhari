@@ -1292,3 +1292,62 @@ func mustResolveCodexSecurity(t *testing.T, agent *codexHarness, policy Security
 	}
 	return resolution
 }
+
+func TestInstallCodexTargetWithholdsEvalDefinitionsFromSkill(t *testing.T) {
+	source := t.TempDir()
+	writeSkillFile(t, source, "SKILL.md", "---\nname: demo\ndescription: demo\n---\n")
+	writeSkillFile(t, source, filepath.Join("references", "notes.md"), "reference material")
+	writeSkillFile(t, source, filepath.Join("scripts", "run.sh"), "#!/bin/sh\n")
+	writeSkillFile(t, source, filepath.Join(EvalDefinitionDir, "evals.json"), `{"skill_name":"demo"}`)
+	writeSkillFile(t, source, filepath.Join(EvalDefinitionDir, "triggers.json"), `{"skill_name":"demo"}`)
+	writeSkillFile(t, source, filepath.Join(EvalDefinitionDir, "files", "sample.csv"), "a,b\n")
+
+	workDir := t.TempDir()
+	if err := installCodexTarget(workDir, Target{Kind: TargetSkill, Name: "demo", SourcePath: source}); err != nil {
+		t.Fatalf("installCodexTarget() error = %v", err)
+	}
+
+	installed := filepath.Join(workDir, ".agents", "skills", "demo")
+	for _, relative := range []string{
+		"SKILL.md",
+		filepath.Join("references", "notes.md"),
+		filepath.Join("scripts", "run.sh"),
+	} {
+		if _, err := os.Stat(filepath.Join(installed, relative)); err != nil {
+			t.Fatalf("skill content %q was not installed: %v", relative, err)
+		}
+	}
+
+	// The evaluated agent must not be able to read the expected output, the
+	// assertions, or the trigger expectation for the case it is answering.
+	if _, err := os.Stat(filepath.Join(installed, EvalDefinitionDir)); !os.IsNotExist(err) {
+		t.Fatalf("eval definitions reached the evaluated workspace: err = %v", err)
+	}
+}
+
+func TestCopyTreeStillCopiesEverythingForSnapshots(t *testing.T) {
+	source := t.TempDir()
+	writeSkillFile(t, source, filepath.Join(EvalDefinitionDir, "evals.json"), `{"skill_name":"demo"}`)
+
+	destination := filepath.Join(t.TempDir(), "snapshot")
+	if err := copyTree(source, destination); err != nil {
+		t.Fatalf("copyTree() error = %v", err)
+	}
+
+	// Retry snapshots restore the whole work directory, so this path must not
+	// inherit the target-installation exclusion.
+	if _, err := os.Stat(filepath.Join(destination, EvalDefinitionDir, "evals.json")); err != nil {
+		t.Fatalf("copyTree() skipped a file it must preserve: %v", err)
+	}
+}
+
+func writeSkillFile(t *testing.T, root, relative, contents string) {
+	t.Helper()
+	path := filepath.Join(root, relative)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

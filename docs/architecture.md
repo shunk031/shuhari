@@ -58,7 +58,7 @@ There is no public Go SDK or dynamic plugin registry. A new agent is added as a 
 1. The CLI resolves and strictly validates the target and its cases.
 2. The engine resolves run and judge security, then completes the adapter preflight before creating a workspace.
 3. The engine creates a new `iteration-N` directory and schedules a bounded number of candidate/baseline runs.
-4. Every run receives a fresh temporary Git repository and isolated agent home. Fixtures are copied into the repository; evaluator-only fields such as `expected_output` are not included in the run prompt. Produced files and the final response are copied into the durable workspace.
+4. Every run receives a fresh temporary Git repository and isolated agent home. Fixtures are copied into the repository; evaluator-only fields such as `expected_output` are not included in the run prompt, and the skill's `evals` directory is withheld when the skill is installed, so the definitions never reach the run through the filesystem either. Produced files and the final response are copied into the durable workspace.
 5. A per-side judge agent receives only a blind label and assertions, then reads one copied artifact tree in its resolved judge workspace. Its free-form evidence is recorded as returned.
 6. A separate blind comparator remains prompt-rendered and receives the original task and both artifacts. Its unblinded mapping and decision are stored independently from assertion grades.
 7. Candidate assertion results are aggregated per case. The default is majority; `--strict-all-trials` requires all trials. The comparison also requires candidate wins to be at least baseline wins.
@@ -74,11 +74,11 @@ Shuhari exposes neutral security levels. Native agent mode names are adapter det
 
 ### Neutral sandbox levels
 
-| Level | Filesystem guarantee | Network guarantee |
-| --- | --- | --- |
-| `isolated` | Commands can write only inside the evaluation workspace; other exposed paths are read-only. | Denied unless `--network=true`. |
-| `read-only` | Commands cannot write to the workspace or host. | Denied unless `--network=true`. |
-| `unsandboxed` | No filesystem guarantee. | No egress guarantee; requires `--network=true`. |
+| Level         | Filesystem guarantee                                                                        | Network guarantee                               |
+| ------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `isolated`    | Commands can write only inside the evaluation workspace; other exposed paths are read-only. | Denied unless `--network=true`.                 |
+| `read-only`   | Commands cannot write to the workspace or host.                                             | Denied unless `--network=true`.                 |
+| `unsandboxed` | No filesystem guarantee.                                                                    | No egress guarantee; requires `--network=true`. |
 
 ### Credential boundary
 
@@ -106,11 +106,11 @@ Schema-v2 manifests let operators verify the exact security boundary and prompt 
 
 ## Codex adapter
 
-| Shuhari level | Codex implementation | Recorded credential boundary |
-| --- | --- | --- |
-| `isolated` | Codex `workspace-write` plus the Shuhari permission profile | `enforced` |
-| `read-only` | Codex `read-only` plus the Shuhari permission profile | `enforced` |
-| `unsandboxed` | Codex `danger-full-access` | `none` |
+| Shuhari level | Codex implementation                                        | Recorded credential boundary |
+| ------------- | ----------------------------------------------------------- | ---------------------------- |
+| `isolated`    | Codex `workspace-write` plus the Shuhari permission profile | `enforced`                   |
+| `read-only`   | Codex `read-only` plus the Shuhari permission profile       | `enforced`                   |
+| `unsandboxed` | Codex `danger-full-access`                                  | `none`                       |
 
 Protected runs give the Codex client a private temporary home while child commands receive a minimal environment that denies source and temporary Codex homes. Claude Code and Gemini CLI remain unsupported until their adapters pass conformance.
 
