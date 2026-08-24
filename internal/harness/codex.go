@@ -104,7 +104,13 @@ func (h *codexHarness) Probe(ctx context.Context, securities ...SecurityResoluti
 // requires `/bin/sh`, and `:` is a shell builtin, so this depends on nothing
 // beyond the shell.
 func sandboxProbeCommand() []string {
-	if runtime.GOOS == "windows" {
+	return sandboxProbeCommandFor(runtime.GOOS)
+}
+
+// sandboxProbeCommandFor takes the operating system as an argument so both
+// branches are reachable from a test on a single host.
+func sandboxProbeCommandFor(goos string) []string {
+	if goos == "windows" {
 		return []string{"cmd.exe", "/c", "exit", "0"}
 	}
 	return []string{"/bin/sh", "-c", ":"}

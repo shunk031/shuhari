@@ -1372,3 +1372,26 @@ func TestSandboxProbeCommandRunsOnThisHost(t *testing.T) {
 		t.Fatalf("sandbox probe command %v did not succeed: %v", command, err)
 	}
 }
+
+func TestSandboxProbeCommandPerOperatingSystem(t *testing.T) {
+	for _, testCase := range []struct {
+		goos string
+		want []string
+	}{
+		{goos: "darwin", want: []string{"/bin/sh", "-c", ":"}},
+		{goos: "linux", want: []string{"/bin/sh", "-c", ":"}},
+		{goos: "windows", want: []string{"cmd.exe", "/c", "exit", "0"}},
+	} {
+		t.Run(testCase.goos, func(t *testing.T) {
+			got := sandboxProbeCommandFor(testCase.goos)
+			if len(got) != len(testCase.want) {
+				t.Fatalf("sandboxProbeCommandFor(%q) = %v, want %v", testCase.goos, got, testCase.want)
+			}
+			for index := range testCase.want {
+				if got[index] != testCase.want[index] {
+					t.Fatalf("sandboxProbeCommandFor(%q) = %v, want %v", testCase.goos, got, testCase.want)
+				}
+			}
+		})
+	}
+}
