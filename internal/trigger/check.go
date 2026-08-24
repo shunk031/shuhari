@@ -58,7 +58,7 @@ func LoadSuite(skillPath, casesPath string) (Suite, error) {
 		return Suite{}, err
 	}
 	if casesPath == "" {
-		casesPath = filepath.Join(absolute, "evals", "triggers.json")
+		casesPath = filepath.Join(absolute, harness.EvalDefinitionDir, "triggers.json")
 	} else {
 		casesPath, err = filepath.Abs(casesPath)
 		if err != nil {

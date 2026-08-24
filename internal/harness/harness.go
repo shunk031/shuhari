@@ -14,6 +14,15 @@ const (
 	TargetInstructions TargetKind = "instructions"
 )
 
+// EvalDefinitionDir is the skill-relative directory that holds a skill's eval
+// and trigger definitions.
+//
+// Those definitions state the expected output, the assertions, and whether the
+// skill should trigger for the exact case the agent is answering, so the
+// directory is never installed into an evaluated workspace. Fixtures are staged
+// separately from the suite root, so withholding it costs a run nothing.
+const EvalDefinitionDir = "evals"
+
 type Action string
 
 const (
