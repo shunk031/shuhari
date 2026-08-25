@@ -274,3 +274,34 @@ func assertApplicationArtifact(t *testing.T, workspace, caseID, verdict string, 
 		t.Fatalf("application artifact = %#v, want verdict %q applied %v", artifact, verdict, applied)
 	}
 }
+
+func TestApplicationPromptDeclinesWithoutAnExplicitStatement(t *testing.T) {
+	t.Parallel()
+
+	// A negative control passes when the agent does not act on the skill. An
+	// agent that correctly ignores an irrelevant skill does not announce that
+	// it is ignoring it; it just does the work. Requiring the announcement sent
+	// that outcome to `ambiguous`, which is a hard error rather than a verdict,
+	// so a correct negative control could not pass.
+	// The prompt is hard-wrapped, so compare against a whitespace-collapsed copy.
+	flat := strings.Join(strings.Fields(applicationPrompt), " ")
+	if strings.Contains(flat, "explicitly determines that the skill is out of scope") {
+		t.Fatalf("application prompt still requires an explicit out-of-scope statement for declined:\n%s", applicationPrompt)
+	}
+	if !strings.Contains(flat, "The agent does not have to say it is declining.") {
+		t.Fatalf("application prompt no longer states that silence is declined:\n%s", applicationPrompt)
+	}
+}
+
+func TestApplicationPromptJudgesOnlyTheTargetSkill(t *testing.T) {
+	t.Parallel()
+
+	// The judge receives skill_name. Without being told to confine itself to
+	// that skill, it weighed whether the agent accepted or declined an
+	// unrelated skill that happened to be present, and returned `ambiguous`
+	// for a run that had in fact applied the target skill.
+	flat := strings.Join(strings.Fields(applicationPrompt), " ")
+	if !strings.Contains(flat, "Judge only the skill named in `skill_name`.") {
+		t.Fatalf("application prompt does not confine the judge to the target skill:\n%s", applicationPrompt)
+	}
+}
