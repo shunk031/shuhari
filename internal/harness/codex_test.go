@@ -1395,3 +1395,83 @@ func TestSandboxProbeCommandPerOperatingSystem(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveSecurityRefusesUnknownHostTool(t *testing.T) {
+	agent := newCodex(Config{Executable: "codex"})
+	policy := SecurityPolicy{Level: SandboxIsolated, HostTools: []string{"definitely-not-a-real-tool-xyz"}}
+
+	_, err := agent.ResolveSecurity(context.Background(), policy)
+	if err == nil || !errors.Is(err, ErrUnsupportedSecurityPolicy) {
+		t.Fatalf("ResolveSecurity() error = %v, want ErrUnsupportedSecurityPolicy", err)
+	}
+	// Running without a declared tool would surface as the agent reporting the
+	// tool unavailable, which grades as a skill failure and hides the cause.
+	if !strings.Contains(err.Error(), "definitely-not-a-real-tool-xyz") {
+		t.Fatalf("ResolveSecurity() error does not name the missing tool: %v", err)
+	}
+}
+
+func TestResolveSecurityRecordsDeclaredHostTools(t *testing.T) {
+	agent := newCodex(Config{Executable: "codex"})
+	bare := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+	withTool := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated, HostTools: []string{"sh"}})
+
+	if len(withTool.HostTools) != 1 || withTool.HostTools[0] != "sh" {
+		t.Fatalf("HostTools = %v, want [sh]", withTool.HostTools)
+	}
+	// Exposing a tool widens the boundary, so it must change the recorded
+	// policy digest rather than producing a run indistinguishable from a
+	// sealed one.
+	if withTool.Adapter.PolicyDigest == bare.Adapter.PolicyDigest {
+		t.Fatal("declared host tools did not change the policy digest")
+	}
+}
+
+func TestIsolatedCommandPathExposesDeclaredTools(t *testing.T) {
+	basePath, _ := isolatedCommandPath(nil)
+	toolPath, tools := isolatedCommandPath([]string{"sh"})
+
+	if basePath != toolPath {
+		// `sh` lives in /bin, already on the base path, so nothing should move.
+		t.Fatalf("declaring an already-reachable tool changed PATH:\n base=%s\n with=%s", basePath, toolPath)
+	}
+	for _, tool := range tools {
+		if strings.HasSuffix(tool, "/sh") {
+			t.Fatal("an already-reachable tool was granted a redundant permission entry")
+		}
+	}
+}
+
+func TestIsolatedCommandPathAddsToolOutsideTheSystemPath(t *testing.T) {
+	// The point of the feature is a tool that the fixed system PATH does not
+	// already reach, so the test needs one that genuinely lives elsewhere.
+	directory := t.TempDir()
+	tool := filepath.Join(directory, "shuhari-fake-tool")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	path, tools := isolatedCommandPath([]string{"shuhari-fake-tool"})
+
+	if !strings.Contains(path, directory) {
+		t.Fatalf("declared tool directory %q is not on the sandbox PATH: %s", directory, path)
+	}
+	found := false
+	for _, granted := range tools {
+		if granted == tool {
+			found = true
+		}
+	}
+	// Without the read grant the binary is on PATH but not executable in the
+	// sandbox, which fails in a way that looks like the tool is missing.
+	if !found {
+		t.Fatalf("declared tool %q was not granted read permission: %v", tool, tools)
+	}
+}
+
+func TestResolveHostToolsRejectsEmptyName(t *testing.T) {
+	if _, err := resolveHostTools([]string{"  "}); err == nil {
+		t.Fatal("resolveHostTools() accepted an empty tool name")
+	}
+}

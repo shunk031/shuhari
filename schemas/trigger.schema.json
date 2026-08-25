@@ -34,6 +34,7 @@
         "sandbox_level": { "enum": ["isolated", "read-only", "unsandboxed"] },
         "network_access": { "enum": ["denied", "allowed"] },
         "credential_boundary": { "enum": ["enforced", "none"] },
+        "host_tools": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "adapter": {
           "type": "object",
           "properties": {

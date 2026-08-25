@@ -132,3 +132,54 @@ func TestCodexRejectsMutatedResolvedNativePolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestSecurityPolicyEqual(t *testing.T) {
+	base := SecurityPolicy{Level: SandboxIsolated, Network: true, HostTools: []string{"uv", "prek"}}
+	for name, other := range map[string]SecurityPolicy{
+		"different level":   {Level: SandboxReadOnly, Network: true, HostTools: []string{"uv", "prek"}},
+		"different network": {Level: SandboxIsolated, Network: false, HostTools: []string{"uv", "prek"}},
+		"fewer tools":       {Level: SandboxIsolated, Network: true, HostTools: []string{"uv"}},
+		"different tool":    {Level: SandboxIsolated, Network: true, HostTools: []string{"uv", "just"}},
+		"reordered tools":   {Level: SandboxIsolated, Network: true, HostTools: []string{"prek", "uv"}},
+		"no tools at all":   {Level: SandboxIsolated, Network: true},
+	} {
+		if base.Equal(other) {
+			t.Fatalf("Equal() reported %s as the same boundary", name)
+		}
+	}
+
+	same := SecurityPolicy{Level: SandboxIsolated, Network: true, HostTools: []string{"uv", "prek"}}
+	if !base.Equal(same) {
+		t.Fatal("Equal() reported two identical policies as different")
+	}
+}
+
+func TestSecurityResolutionEqual(t *testing.T) {
+	adapter := AdapterSecurity{Name: "codex", NativeMode: "workspace-write", PolicyDigest: "sha256:abc"}
+	base := SecurityResolution{
+		SandboxLevel:       SandboxIsolated,
+		NetworkAccess:      NetworkAllowed,
+		CredentialBoundary: CredentialBoundaryEnforced,
+		Adapter:            adapter,
+		HostTools:          []string{"uv"},
+	}
+	for name, mutate := range map[string]func(SecurityResolution) SecurityResolution{
+		"different level":    func(r SecurityResolution) SecurityResolution { r.SandboxLevel = SandboxReadOnly; return r },
+		"different network":  func(r SecurityResolution) SecurityResolution { r.NetworkAccess = NetworkDenied; return r },
+		"different boundary": func(r SecurityResolution) SecurityResolution { r.CredentialBoundary = CredentialBoundaryNone; return r },
+		"different digest": func(r SecurityResolution) SecurityResolution {
+			r.Adapter.PolicyDigest = "sha256:def"
+			return r
+		},
+		"different tools": func(r SecurityResolution) SecurityResolution { r.HostTools = []string{"prek"}; return r },
+		"no tools":        func(r SecurityResolution) SecurityResolution { r.HostTools = nil; return r },
+	} {
+		if base.Equal(mutate(base)) {
+			t.Fatalf("Equal() reported %s as the same boundary", name)
+		}
+	}
+
+	if !base.Equal(base) {
+		t.Fatal("Equal() reported a resolution as different from itself")
+	}
+}

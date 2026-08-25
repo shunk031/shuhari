@@ -56,6 +56,14 @@ func (e *UnsupportedSecurityPolicyError) Unwrap() error {
 type SecurityPolicy struct {
 	Level   SandboxLevel `json:"sandbox_level"`
 	Network bool         `json:"network"`
+	// HostTools names executables the evaluated agent needs from the host.
+	//
+	// Runs otherwise see a fixed system PATH, so a skill whose subject is a
+	// tool installed elsewhere cannot be measured: the agent reports the tool
+	// as unavailable and loses to a baseline that improvises. Naming a tool
+	// here is an explicit, recorded widening of the boundary, in the same
+	// spirit as Network.
+	HostTools []string `json:"host_tools,omitempty"`
 }
 
 type AdapterSecurity struct {
@@ -67,12 +75,45 @@ type AdapterSecurity struct {
 type SecurityResolution struct {
 	SandboxLevel       SandboxLevel       `json:"sandbox_level"`
 	NetworkAccess      NetworkAccess      `json:"network_access"`
+	HostTools          []string           `json:"host_tools,omitempty"`
 	CredentialBoundary CredentialBoundary `json:"credential_boundary"`
 	Adapter            AdapterSecurity    `json:"adapter"`
 }
 
 func (r SecurityResolution) Policy() SecurityPolicy {
-	return SecurityPolicy{Level: r.SandboxLevel, Network: r.NetworkAccess == NetworkAllowed}
+	return SecurityPolicy{Level: r.SandboxLevel, Network: r.NetworkAccess == NetworkAllowed, HostTools: r.HostTools}
+}
+
+// Equal reports whether two resolutions describe the same boundary.
+//
+// SecurityResolution holds a slice, so it is no longer comparable with `==`.
+func (r SecurityResolution) Equal(other SecurityResolution) bool {
+	if r.SandboxLevel != other.SandboxLevel || r.NetworkAccess != other.NetworkAccess ||
+		r.CredentialBoundary != other.CredentialBoundary || r.Adapter != other.Adapter ||
+		len(r.HostTools) != len(other.HostTools) {
+		return false
+	}
+	for index := range r.HostTools {
+		if r.HostTools[index] != other.HostTools[index] {
+			return false
+		}
+	}
+	return true
+}
+
+// Equal reports whether two policies describe the same boundary.
+//
+// SecurityPolicy holds a slice, so it is no longer comparable with `==`.
+func (p SecurityPolicy) Equal(other SecurityPolicy) bool {
+	if p.Level != other.Level || p.Network != other.Network || len(p.HostTools) != len(other.HostTools) {
+		return false
+	}
+	for index := range p.HostTools {
+		if p.HostTools[index] != other.HostTools[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func EffectiveSandboxLevel(requested string) (SandboxLevel, error) {

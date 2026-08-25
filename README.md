@@ -148,7 +148,7 @@ Exit status: `0` pass, `1` evaluation or trigger failure, `2` invalid input or e
 
 ### Configure evaluation runs
 
-Runs are sandboxed and offline by default; pass `--network` for cases that need it. Every run writes a fresh iteration with timing, grading, comparison, benchmark, and failure receipts.
+Runs are sandboxed and offline by default; pass `--network` for cases that need it. They also see a fixed system `PATH`, so a skill whose subject is a tool installed elsewhere needs that tool named: `--allow-tool uv --allow-tool pre-commit`. A declared tool that is not on the host refuses the run rather than evaluating without it. Every run writes a fresh iteration with timing, grading, comparison, benchmark, and failure receipts.
 
 Credential handling is documented in the [credential boundary](docs/architecture.md#credential-boundary). If the agent's sandbox cannot start but the environment is already isolated (a CI runner or container), disable it explicitly — Shuhari refuses this without the acknowledgement and labels the verdict:
 

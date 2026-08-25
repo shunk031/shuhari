@@ -130,7 +130,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, config Config)
 		return Report{}, err
 	}
 	config.SandboxLevel = string(level)
-	policy := harness.SecurityPolicy{Level: level, Network: config.Network}
+	policy := harness.SecurityPolicy{Level: level, Network: config.Network, HostTools: config.HostTools}
 	security, err := agent.ResolveSecurity(ctx, policy)
 	if err != nil {
 		return Report{}, err
@@ -421,7 +421,7 @@ func digestSuite(suite Suite) (string, error) {
 }
 
 func writeTriggerManifest(iteration string, suite Suite, suiteDigest string, identity harness.Identity, config Config, security harness.SecurityResolution) error {
-	policy := harness.SecurityPolicy{Level: harness.SandboxLevel(config.SandboxLevel), Network: config.Network}
+	policy := harness.SecurityPolicy{Level: harness.SandboxLevel(config.SandboxLevel), Network: config.Network, HostTools: config.HostTools}
 	if err := harness.ValidateSecurityResolution(policy, security); err != nil {
 		return fmt.Errorf("validate manifest security: %w", err)
 	}
