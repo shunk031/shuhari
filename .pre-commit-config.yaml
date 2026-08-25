@@ -1,0 +1,14 @@
+repos:
+  - repo: local
+    hooks:
+      - id: textlint-markdown
+        name: fix hard-wrapped Markdown prose
+        entry: textlint --fix --config .textlintrc.json
+        language: node
+        additional_dependencies:
+          - textlint@15.8.0
+          - "@cffnpwr/textlint-rule-no-arbitrary-line-break@1.1.0"
+        types: [markdown]
+        # Transcript fixtures are frozen inputs whose exact bytes are what the
+        # tests assert against, and CLAUDE.md is a symlink to AGENTS.md.
+        exclude: ^(internal/[^/]+/testdata/|CLAUDE\.md$)

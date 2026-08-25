@@ -41,7 +41,5 @@ Return exactly one result for each input assertion:
 }
 ```
 
-Copy each assertion's `text` exactly, set `passed` from the artifact, and set
-non-empty `evidence` to a concise explanation, quote, or file reference.
-Evidence is recorded as returned; it is not a second grading decision. Judge
-positive, negative, and mixed assertions from the same artifact.
+Copy each assertion's `text` exactly, set `passed` from the artifact, and set non-empty `evidence` to a concise explanation, quote, or file reference.
+Evidence is recorded as returned; it is not a second grading decision. Judge positive, negative, and mixed assertions from the same artifact.
