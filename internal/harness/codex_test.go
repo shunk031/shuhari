@@ -1441,3 +1441,37 @@ func TestIsolatedCommandPathExposesDeclaredTools(t *testing.T) {
 		}
 	}
 }
+
+func TestIsolatedCommandPathAddsToolOutsideTheSystemPath(t *testing.T) {
+	// The point of the feature is a tool that the fixed system PATH does not
+	// already reach, so the test needs one that genuinely lives elsewhere.
+	directory := t.TempDir()
+	tool := filepath.Join(directory, "shuhari-fake-tool")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	path, tools := isolatedCommandPath([]string{"shuhari-fake-tool"})
+
+	if !strings.Contains(path, directory) {
+		t.Fatalf("declared tool directory %q is not on the sandbox PATH: %s", directory, path)
+	}
+	found := false
+	for _, granted := range tools {
+		if granted == tool {
+			found = true
+		}
+	}
+	// Without the read grant the binary is on PATH but not executable in the
+	// sandbox, which fails in a way that looks like the tool is missing.
+	if !found {
+		t.Fatalf("declared tool %q was not granted read permission: %v", tool, tools)
+	}
+}
+
+func TestResolveHostToolsRejectsEmptyName(t *testing.T) {
+	if _, err := resolveHostTools([]string{"  "}); err == nil {
+		t.Fatal("resolveHostTools() accepted an empty tool name")
+	}
+}
