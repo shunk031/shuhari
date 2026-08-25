@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/shunk031/shuhari/internal/harness"
+	"github.com/shunk031/shuhari/internal/progress"
 	"github.com/spf13/cobra"
 )
 
@@ -110,4 +111,15 @@ func Main(version string) {
 		fmt.Fprintln(os.Stderr, err)
 	}
 	os.Exit(exitCode(err))
+}
+
+// progressReporter returns a reporter writing to stderr when progress is on.
+//
+// stdout carries the verdict, so progress must not go there: a caller parsing
+// the result should not have to separate it from a live event stream.
+func progressReporter(enabled bool) *progress.Reporter {
+	if !enabled {
+		return progress.Discard()
+	}
+	return progress.New(os.Stderr)
 }

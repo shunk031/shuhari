@@ -68,6 +68,14 @@ Judge evidence is free-form supporting material and is recorded without matcher 
 
 Trigger checks record consultation separately from application. Read evidence accumulates only from successful pre-response commands that reference the target. The body is split into nonblank, byte-weighted chunks of at most 128 bytes; a read requires at least 90% cumulative coverage. A trial with no read is not applied. After a read, a structured judge using the trial's resolved security classifies the transcript as applied, declined, or ambiguous; ambiguity fails closed. A case passes when at least `floor(trials/2)+1` application outcomes match `should_trigger`; `--strict-all-trials` raises that requirement to every trial.
 
+## Progress reporting
+
+An evaluation runs for tens of minutes and otherwise prints nothing until it finishes, which leaves an operator unable to distinguish a slow run from a stuck one, and leaves an agent driving Shuhari with nothing to read but process tables and half-written artifact directories.
+
+`--progress` streams phase events as JSON Lines on stderr. `stdout` keeps carrying only the verdict, so a caller parsing the result never has to separate it from a live stream. Keys are stable and flat: `phase` is `run`, `grade`, or `compare`; `event` is `start` or `finish`; a finish adds `duration_ms`, `status`, and `completed` of `total`. Every start is followed by exactly one finish for the same identifiers, so events pair without heuristics, and emission is serialized so lines never interleave under `--jobs`.
+
+Grading and comparison honour `--jobs` alongside the run phase. They were sequential, so a six-case suite at three trials meant thirty-six judge invocations end to end after the runs had already finished — the phase that looked stuck was simply serial.
+
 ## Execution security contract
 
 Shuhari exposes neutral security levels. Native agent mode names are adapter details, not accepted `--sandbox` or `SHUHARI_SANDBOX` values.

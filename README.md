@@ -144,6 +144,8 @@ Shuhari owns the evaluation mechanism; your repository owns file selection and p
       pass_filenames: true
 ```
 
+Pass `--progress` to stream phase events as JSON Lines on stderr while a run is in flight; `stdout` still carries only the verdict.
+
 Exit status: `0` pass, `1` evaluation or trigger failure, `2` invalid input or execution error. All three commands support `--validate-only` for a fast schema check without an agent.
 
 ### Configure evaluation runs
