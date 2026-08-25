@@ -305,3 +305,32 @@ func TestApplicationPromptJudgesOnlyTheTargetSkill(t *testing.T) {
 		t.Fatalf("application prompt does not confine the judge to the target skill:\n%s", applicationPrompt)
 	}
 }
+
+func TestApplicationPromptDoesNotRequireEveryInstruction(t *testing.T) {
+	t.Parallel()
+
+	// `applied` needs one skill-specific instruction, not all of them. A judge
+	// that treats an unfollowed instruction as disqualifying returned
+	// `declined` for a run whose own evidence said the agent had used the
+	// skill's guidance — the skill also told it to review the result with a
+	// different skill, which this task had no reason to do.
+	flat := strings.Join(strings.Fields(applicationPrompt), " ")
+	if !strings.Contains(flat, "One is enough.") {
+		t.Fatalf("application prompt does not state that one instruction suffices:\n%s", applicationPrompt)
+	}
+	if !strings.Contains(flat, "Instructions the agent did not follow do not undo that") {
+		t.Fatalf("application prompt does not say unfollowed instructions leave `applied` standing:\n%s", applicationPrompt)
+	}
+}
+
+func TestApplicationPromptSeparatesSkillsNamedInsideTheTarget(t *testing.T) {
+	t.Parallel()
+
+	// The target skill's own body may tell the agent to use another skill by
+	// name. Reading that name in the body is not a reason to judge the agent
+	// against the other skill.
+	flat := strings.Join(strings.Fields(applicationPrompt), " ")
+	if !strings.Contains(flat, "including any the target skill names in its own body") {
+		t.Fatalf("application prompt does not cover skills named inside the target:\n%s", applicationPrompt)
+	}
+}
