@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/shunk031/shuhari/internal/harness"
+	"github.com/shunk031/shuhari/internal/progress"
+	"sync"
 )
 
 //go:embed prompts/grader.md
@@ -223,11 +225,83 @@ func gradeRuns(ctx context.Context, agent harness.Harness, suite Suite, results 
 }
 
 func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config, security harness.SecurityResolution) (map[string]judgeEntry, string, []judgeTransportRetry, error) {
+	// Judgements are independent per trial, so they run concurrently under the
+	// same `--jobs` budget the run phase uses. Grading used to be a plain
+	// sequential loop: a six-case suite at three trials meant thirty-six judge
+	// invocations end to end, which dominated the wall clock and made the phase
+	// look stuck.
+	//
+	// Results are collected by index rather than appended, so the merged output
+	// and the retry log stay in input order regardless of completion order.
+	collected := make([]graderTrialResult, len(inputs))
+
+	workers := config.Jobs
+	if workers < 1 {
+		workers = 1
+	}
+	semaphore := make(chan struct{}, workers)
+	var waitGroup sync.WaitGroup
+	for index, item := range inputs {
+		waitGroup.Add(1)
+		go func(index int, item trialJudgeInputs) {
+			defer waitGroup.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			collected[index] = gradeOneTrial(ctx, agent, item, config, security)
+		}(index, item)
+	}
+	waitGroup.Wait()
+
 	merged := judgeOutput{}
 	entries := map[string]judgeEntry{}
 	var retries []judgeTransportRetry
-	for _, item := range inputs {
-		combined := judgeEntry{ID: item.ID, Trial: item.Trial}
+	for _, result := range collected {
+		retries = append(retries, result.retries...)
+		if result.err != nil {
+			return nil, result.response, retries, result.err
+		}
+		entries[caseTrialKey(result.entry.ID, result.entry.Trial)] = result.entry
+		merged.Cases = append(merged.Cases, result.entry)
+	}
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return nil, "", retries, fmt.Errorf("encode grader response: %w", err)
+	}
+	return entries, string(encoded), retries, nil
+}
+
+// gradeOneTrial judges both blinded sides of one trial.
+//
+// The two sides stay sequential: they write into one entry, and splitting them
+// would double concurrency against the same endpoint for no ordering benefit.
+// graderTrialResult carries one trial's judgement plus what the caller needs to
+// merge it back in input order.
+type graderTrialResult struct {
+	entry    judgeEntry
+	retries  []judgeTransportRetry
+	response string
+	err      error
+}
+
+// gradeOneTrial judges both blinded sides of one trial.
+//
+// The two sides stay sequential: they write into one entry, and splitting them
+// would double concurrency against the same endpoint for no ordering benefit.
+func gradeOneTrial(ctx context.Context, agent harness.Harness, item trialJudgeInputs, config Config, security harness.SecurityResolution) graderTrialResult {
+	finish := config.Progress.Started(progress.Event{
+		Phase: progress.PhaseGrade,
+		Case:  item.ID,
+		Trial: item.Trial,
+	})
+	result := gradeTrialSides(ctx, agent, item, config, security)
+	finish(statusOf(result.err), result.err)
+	return result
+}
+
+func gradeTrialSides(ctx context.Context, agent harness.Harness, item trialJudgeInputs, config Config, security harness.SecurityResolution) graderTrialResult {
+	var retries []judgeTransportRetry
+	combined := judgeEntry{ID: item.ID, Trial: item.Trial}
+	{
 		for _, side := range []struct {
 			label       string
 			artifactDir string
@@ -240,15 +314,15 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 			response, attempts, err := runAgentStructuredJudge(ctx, agent, graderPrompt, input, graderSchema(), config, security, artifactRoot)
 			retries = append(retries, decorateJudgeAttempts("grader", item.ID+"/"+side.label, item.Trial, attempts)...)
 			if err != nil {
-				return nil, response, retries, fmt.Errorf("grader case %q trial %d side %s: %w", item.ID, item.Trial, side.label, err)
+				return graderTrialResult{retries: retries, response: response, err: fmt.Errorf("grader case %q trial %d side %s: %w", item.ID, item.Trial, side.label, err)}
 			}
 			var output agentJudgeOutput
 			if err := json.Unmarshal([]byte(response), &output); err != nil {
-				return nil, response, retries, fmt.Errorf("decode grader response: %w", err)
+				return graderTrialResult{retries: retries, response: response, err: fmt.Errorf("decode grader response: %w", err)}
 			}
 			trialEntries, err := validateAgentGraderEntries(output, input)
 			if err != nil {
-				return nil, response, retries, err
+				return graderTrialResult{retries: retries, response: response, err: err}
 			}
 			entry := trialEntries[caseTrialKey(item.ID, item.Trial)]
 			if side.label == "A" {
@@ -257,45 +331,88 @@ func runGradersPerTrial(ctx context.Context, agent harness.Harness, inputs []tri
 				combined.BAssertionResults = entry.AssertionResults
 			}
 		}
-		entries[caseTrialKey(item.ID, item.Trial)] = combined
-		merged.Cases = append(merged.Cases, combined)
 	}
-	encoded, err := json.Marshal(merged)
-	if err != nil {
-		return nil, "", retries, fmt.Errorf("encode grader response: %w", err)
-	}
-	return entries, string(encoded), retries, nil
+	return graderTrialResult{entry: combined, retries: retries}
 }
 
 func runComparatorsPerTrial(ctx context.Context, agent harness.Harness, inputs []trialJudgeInputs, config Config, security harness.SecurityResolution) (map[string]comparatorEntry, string, []judgeTransportRetry, error) {
+	// Comparisons are independent per trial, so they share the run phase's
+	// `--jobs` budget rather than running end to end. Collected by index so the
+	// merged output stays in input order.
+	collected := make([]comparatorTrialResult, len(inputs))
+
+	workers := config.Jobs
+	if workers < 1 {
+		workers = 1
+	}
+	semaphore := make(chan struct{}, workers)
+	var waitGroup sync.WaitGroup
+	for index, item := range inputs {
+		waitGroup.Add(1)
+		go func(index int, item trialJudgeInputs) {
+			defer waitGroup.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			finish := config.Progress.Started(progress.Event{
+				Phase: progress.PhaseCompare,
+				Case:  item.ID,
+				Trial: item.Trial,
+			})
+			collected[index] = compareOneTrial(ctx, agent, item, config, security)
+			finish(statusOf(collected[index].err), collected[index].err)
+		}(index, item)
+	}
+	waitGroup.Wait()
+
 	merged := comparatorOutput{}
 	entries := map[string]comparatorEntry{}
 	var retries []judgeTransportRetry
-	for _, item := range inputs {
-		comparatorInputs := []comparatorInput{item.Comparator}
-		response, attempts, err := runStructuredJudge(ctx, agent, comparatorPrompt, comparatorInputs, comparatorSchema(), config, security)
-		retries = append(retries, decorateJudgeAttempts("comparator", item.ID, item.Trial, attempts)...)
-		if err != nil {
-			return nil, response, retries, fmt.Errorf("comparator case %q trial %d: %w", item.ID, item.Trial, err)
+	for _, result := range collected {
+		retries = append(retries, result.retries...)
+		if result.err != nil {
+			return nil, result.response, retries, result.err
 		}
-		var output comparatorOutput
-		if err := json.Unmarshal([]byte(response), &output); err != nil {
-			return nil, response, retries, fmt.Errorf("decode comparator response: %w", err)
-		}
-		trialEntries, err := validateComparatorEntries(output, comparatorInputs)
-		if err != nil {
-			return nil, response, retries, err
-		}
-		for key, entry := range trialEntries {
+		for key, entry := range result.entries {
 			entries[key] = entry
 		}
-		merged.Cases = append(merged.Cases, output.Cases...)
+		merged.Cases = append(merged.Cases, result.cases...)
 	}
 	encoded, err := json.Marshal(merged)
 	if err != nil {
 		return nil, "", retries, fmt.Errorf("encode comparator response: %w", err)
 	}
 	return entries, string(encoded), retries, nil
+}
+
+// comparatorTrialResult carries one trial's comparison plus what the caller
+// needs to merge it back in input order.
+type comparatorTrialResult struct {
+	entries  map[string]comparatorEntry
+	cases    []comparatorEntry
+	retries  []judgeTransportRetry
+	response string
+	err      error
+}
+
+func compareOneTrial(ctx context.Context, agent harness.Harness, item trialJudgeInputs, config Config, security harness.SecurityResolution) comparatorTrialResult {
+	var retries []judgeTransportRetry
+	{
+		comparatorInputs := []comparatorInput{item.Comparator}
+		response, attempts, err := runStructuredJudge(ctx, agent, comparatorPrompt, comparatorInputs, comparatorSchema(), config, security)
+		retries = append(retries, decorateJudgeAttempts("comparator", item.ID, item.Trial, attempts)...)
+		if err != nil {
+			return comparatorTrialResult{retries: retries, response: response, err: fmt.Errorf("comparator case %q trial %d: %w", item.ID, item.Trial, err)}
+		}
+		var output comparatorOutput
+		if err := json.Unmarshal([]byte(response), &output); err != nil {
+			return comparatorTrialResult{retries: retries, response: response, err: fmt.Errorf("decode comparator response: %w", err)}
+		}
+		trialEntries, err := validateComparatorEntries(output, comparatorInputs)
+		if err != nil {
+			return comparatorTrialResult{retries: retries, response: response, err: err}
+		}
+		return comparatorTrialResult{entries: trialEntries, cases: output.Cases, retries: retries}
+	}
 }
 
 func runStructuredJudge(ctx context.Context, agent harness.Harness, instructions string, input any, schema []byte, config Config, security harness.SecurityResolution) (string, []judgeCallAttempts, error) {

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/shunk031/shuhari/internal/harness"
+	"github.com/shunk031/shuhari/internal/progress"
 )
 
 type Suite struct {
@@ -41,8 +42,11 @@ type Config struct {
 	SandboxLevel         string        `json:"sandbox_level"`
 	Network              bool          `json:"network"`
 	HostTools            []string      `json:"host_tools,omitempty"`
-	Workspace            string        `json:"-"`
-	StrictAllTrials      bool          `json:"strict_all_trials"`
+	// Progress receives phase events as the evaluation runs. A nil reporter
+	// discards them, so callers that do not want progress change nothing.
+	Progress        *progress.Reporter `json:"-"`
+	Workspace       string             `json:"-"`
+	StrictAllTrials bool               `json:"strict_all_trials"`
 }
 
 type Report struct {

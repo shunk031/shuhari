@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/shunk031/shuhari/internal/harness"
+	"github.com/shunk031/shuhari/internal/progress"
 	"github.com/shunk031/shuhari/internal/receipt"
 	"github.com/shunk031/shuhari/internal/skill"
 	contracts "github.com/shunk031/shuhari/schemas"
@@ -197,6 +198,7 @@ func measure(ctx context.Context, suite Suite, agent harness.Harness, config Con
 		Err     error
 	}
 	outcomes := make(chan outcome, len(suite.Cases)*config.Trials)
+	config.Progress.SetTotal(progress.PhaseRun, len(suite.Cases)*config.Trials)
 	workers := config.Jobs
 	if limit := len(suite.Cases) * config.Trials; workers > limit {
 		workers = limit
@@ -207,7 +209,17 @@ func measure(ctx context.Context, suite Suite, agent harness.Harness, config Con
 		go func() {
 			defer group.Done()
 			for item := range tasks {
+				finish := config.Progress.Started(progress.Event{
+					Phase: progress.PhaseRun,
+					Case:  item.Case.ID,
+					Trial: item.Trial,
+				})
 				result, err := executeCase(ctx, suite, agent, config, security, iteration, item.Case, item.Trial)
+				status := "ok"
+				if err != nil {
+					status = "error"
+				}
+				finish(status, err)
 				outcomes <- outcome{Case: item.Case, Trial: item.Trial, Read: result.TargetRead, Applied: result.Applied, Err: err}
 			}
 		}()

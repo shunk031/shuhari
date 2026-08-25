@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shunk031/shuhari/internal/harness"
+	"github.com/shunk031/shuhari/internal/progress"
 	"github.com/shunk031/shuhari/internal/receipt"
 	contracts "github.com/shunk031/shuhari/schemas"
 )
@@ -87,6 +88,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, config Config)
 			tasks = append(tasks, runTask{Case: item, Trial: trial, Variant: withVariant}, runTask{Case: item, Trial: trial, Variant: withoutVariant})
 		}
 	}
+	config.Progress.SetTotal(progress.PhaseRun, len(tasks))
 	results, err := executeTasks(ctx, suite, agent, config, runSecurity, iteration, tasks)
 	if err != nil {
 		_ = writeJSON(filepath.Join(iteration, "evidence.json"), struct {
@@ -208,7 +210,14 @@ func executeTasks(ctx context.Context, suite Suite, agent harness.Harness, confi
 		go func() {
 			defer group.Done()
 			for task := range queue {
+				finish := config.Progress.Started(progress.Event{
+					Phase:   progress.PhaseRun,
+					Case:    task.Case.ID,
+					Trial:   task.Trial,
+					Variant: task.Variant,
+				})
 				result, err := executeTask(ctx, suite, agent, config, security, iteration, task)
+				finish(statusOf(err), err)
 				outcomes <- runOutcome{Result: result, Err: err}
 			}
 		}()
@@ -306,4 +315,13 @@ func buildRunPrompt(item Case, files []string, outputDir string, target *harness
 	}
 	fmt.Fprintf(&builder, "- Save all produced files under: %s\n", outputDir)
 	return builder.String()
+}
+
+// statusOf maps an error to the status field of a finish event, so a consumer
+// can filter without inspecting the error string.
+func statusOf(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "ok"
 }

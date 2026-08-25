@@ -1,6 +1,10 @@
 package trigger
 
-import "time"
+import (
+	"time"
+
+	"github.com/shunk031/shuhari/internal/progress"
+)
 
 const (
 	triggerArtifactSchemaVersion     = "3"
@@ -30,8 +34,11 @@ type Config struct {
 	SandboxLevel    string        `json:"sandbox_level"`
 	Network         bool          `json:"network"`
 	HostTools       []string      `json:"host_tools,omitempty"`
-	Workspace       string        `json:"-"`
-	StrictAllTrials bool          `json:"strict_all_trials"`
+	// Progress receives phase events as the check runs. A nil reporter
+	// discards them.
+	Progress        *progress.Reporter `json:"-"`
+	Workspace       string             `json:"-"`
+	StrictAllTrials bool               `json:"strict_all_trials"`
 }
 
 type Report struct {
