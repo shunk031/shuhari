@@ -40,6 +40,7 @@ type Config struct {
 	JudgeReasoningEffort string        `json:"judge_reasoning_effort,omitempty"`
 	SandboxLevel         string        `json:"sandbox_level"`
 	Network              bool          `json:"network"`
+	HostTools            []string      `json:"host_tools,omitempty"`
 	Workspace            string        `json:"-"`
 	StrictAllTrials      bool          `json:"strict_all_trials"`
 }

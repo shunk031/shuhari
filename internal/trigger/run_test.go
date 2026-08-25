@@ -163,7 +163,7 @@ func TestRunChecksPositiveAndNegativeCases(t *testing.T) {
 		t.Fatalf("trigger policy provenance = version %q rule %q, want version 3 majority", summary.SchemaVersion, summary.DecisionRule)
 	}
 	for _, request := range agent.requests {
-		if request.Security != summary.Security {
+		if !request.Security.Equal(summary.Security) {
 			t.Fatalf("request security = %#v, want exact artifact value %#v", request.Security, summary.Security)
 		}
 	}
@@ -178,7 +178,7 @@ func TestRunChecksPositiveAndNegativeCases(t *testing.T) {
 	if err := json.Unmarshal(manifestContents, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.SchemaVersion != "2" || manifest.Security != summary.Security {
+	if manifest.SchemaVersion != "2" || !manifest.Security.Equal(summary.Security) {
 		t.Fatalf("manifest security = %#v, trigger security = %#v", manifest.Security, summary.Security)
 	}
 }

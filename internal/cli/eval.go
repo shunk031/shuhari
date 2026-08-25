@@ -21,6 +21,7 @@ type evalFlags struct {
 	judgeReasoningEffort string
 	sandbox              string
 	network              bool
+	hostTools            []string
 	workspace            string
 	trials               int
 	jobs                 int
@@ -136,6 +137,7 @@ func addEvalFlags(command *cobra.Command, flags *evalFlags) {
 	command.Flags().StringVar(&flags.judgeReasoningEffort, "judge-reasoning-effort", "", "reasoning effort used for grading")
 	command.Flags().StringVar(&flags.sandbox, "sandbox", "isolated", "Shuhari sandbox level: isolated, read-only, or unsandboxed")
 	command.Flags().BoolVar(&flags.network, "network", false, "allow network access during evaluated runs")
+	command.Flags().StringArrayVar(&flags.hostTools, "allow-tool", nil, "expose a host executable to the evaluated agent, repeatable (runs otherwise see a fixed system PATH)")
 	command.Flags().StringVar(&flags.workspace, "workspace", "", "workspace root (defaults beside the target)")
 	command.Flags().IntVar(&flags.trials, "trials", 1, "trials per case and configuration")
 	command.Flags().IntVar(&flags.jobs, "jobs", 2, "maximum concurrent evaluated runs")
@@ -145,7 +147,7 @@ func addEvalFlags(command *cobra.Command, flags *evalFlags) {
 }
 
 func (flags evalFlags) config() eval.Config {
-	return eval.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, JudgeModel: flags.judgeModel, JudgeReasoningEffort: flags.judgeReasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict}
+	return eval.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, JudgeModel: flags.judgeModel, JudgeReasoningEffort: flags.judgeReasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, HostTools: flags.hostTools, Workspace: flags.workspace, StrictAllTrials: flags.strict}
 }
 
 func resolveSkillPaths(arguments []string) ([]string, error) {

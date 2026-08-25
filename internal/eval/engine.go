@@ -36,7 +36,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, config Config)
 		return Report{}, err
 	}
 	config.SandboxLevel = string(level)
-	runPolicy := harness.SecurityPolicy{Level: level, Network: config.Network}
+	runPolicy := harness.SecurityPolicy{Level: level, Network: config.Network, HostTools: config.HostTools}
 	runSecurity, err := agent.ResolveSecurity(ctx, runPolicy)
 	if err != nil {
 		return Report{}, err
@@ -49,7 +49,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, config Config)
 	if runPolicy.Level == harness.SandboxUnsandboxed {
 		judgePolicy = runPolicy
 	}
-	if judgePolicy != runPolicy {
+	if !judgePolicy.Equal(runPolicy) {
 		judgeSecurity, err = agent.ResolveSecurity(ctx, judgePolicy)
 		if err != nil {
 			return Report{}, fmt.Errorf("resolve judge security: %w", err)
@@ -168,7 +168,7 @@ func allTrialsPass(values []bool) bool {
 }
 
 func writeManifest(iteration string, suite Suite, suiteDigest string, identity harness.Identity, config Config, security, judgeSecurity harness.SecurityResolution) error {
-	policy := harness.SecurityPolicy{Level: harness.SandboxLevel(config.SandboxLevel), Network: config.Network}
+	policy := harness.SecurityPolicy{Level: harness.SandboxLevel(config.SandboxLevel), Network: config.Network, HostTools: config.HostTools}
 	if err := harness.ValidateSecurityResolution(policy, security); err != nil {
 		return fmt.Errorf("validate manifest security: %w", err)
 	}

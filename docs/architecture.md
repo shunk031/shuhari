@@ -23,7 +23,7 @@ The consuming repository owns:
 
 - which changed files select a skill or instructions target;
 - pre-commit hook definitions and `SKIP` behavior;
-- declared policy values such as `--trials`, `--jobs`, `--timeout`, `--network`, and `--strict-all-trials`;
+- declared policy values such as `--trials`, `--jobs`, `--timeout`, `--network`, `--allow-tool`, and `--strict-all-trials`;
 - static checks for repository-specific naming, migration, or ownership rules.
 
 The selected agent CLI owns authentication, model configuration, native sandbox enforcement, and its event format. Each Shuhari adapter maps the neutral execution-security contract to those native controls, refuses policies it cannot honor, and converts native events into the internal result contract.
@@ -79,6 +79,14 @@ Shuhari exposes neutral security levels. Native agent mode names are adapter det
 | `isolated`    | Commands can write only inside the evaluation workspace; other exposed paths are read-only. | Denied unless `--network=true`.                 |
 | `read-only`   | Commands cannot write to the workspace or host.                                             | Denied unless `--network=true`.                 |
 | `unsandboxed` | No filesystem guarantee.                                                                    | No egress guarantee; requires `--network=true`. |
+
+### Host tools
+
+Runs see a fixed system `PATH`, so an evaluation does not inherit whatever happens to be installed on the machine. A skill whose subject is a tool installed outside those directories cannot be measured under that default: the agent reports the tool as unavailable and loses the comparison to a baseline that improvises, which grades as a skill failure while the real cause is the boundary.
+
+`--allow-tool <name>` names an executable the run needs. Each name is resolved on the host before the workspace exists; a name that does not resolve refuses the policy rather than running without it, because a silently absent tool is indistinguishable from a skill that does not work. Resolved tools join `PATH` and are granted read permission in the adapter profile.
+
+Declared tools are part of the policy, so they change the recorded policy digest and appear in the manifest. A run with a tool exposed is not the same boundary as a sealed one and is not presented as such. Judges never receive them: they read copied artifacts and need nothing from the host.
 
 ### Credential boundary
 

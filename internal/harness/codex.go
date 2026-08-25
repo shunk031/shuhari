@@ -240,10 +240,14 @@ func (*codexHarness) ResolveSecurity(_ context.Context, policy SecurityPolicy) (
 	if policy.Network {
 		network = NetworkAllowed
 	}
+	if _, err := resolveHostTools(policy.HostTools); err != nil {
+		return SecurityResolution{}, &UnsupportedSecurityPolicyError{Adapter: "codex", Policy: policy, Reason: err.Error()}
+	}
 	resolution := SecurityResolution{
 		SandboxLevel:       policy.Level,
 		NetworkAccess:      network,
 		CredentialBoundary: boundary,
+		HostTools:          policy.HostTools,
 		Adapter: AdapterSecurity{
 			Name:         "codex",
 			NativeMode:   nativeMode,
@@ -1001,7 +1005,7 @@ func writeCodexProfile(codexHome string, request Request) error {
 	builder.WriteString("[shell_environment_policy.set]\n")
 	builder.WriteString("CODEX_HOME = \"\"\n")
 	fmt.Fprintf(&builder, "HOME = %s\n", tomlString(commandHome))
-	commandPath, commandTools := isolatedCommandPath()
+	commandPath, commandTools := isolatedCommandPath(request.Security.HostTools)
 	fmt.Fprintf(&builder, "PATH = %s\n", tomlString(commandPath))
 	fmt.Fprintf(&builder, "TMPDIR = %s\n", tomlString(commandTmp))
 	builder.WriteString("LANG = \"C.UTF-8\"\n")
@@ -1042,24 +1046,61 @@ func tomlString(value string) string {
 	return string(encoded)
 }
 
-func isolatedCommandPath() (string, []string) {
+// resolveHostTools locates each declared tool on the host.
+//
+// A tool that cannot be found is refused rather than skipped. Running without
+// it would produce an agent that reports the tool as unavailable, which grades
+// as a skill failure and hides the real cause.
+func resolveHostTools(names []string) ([]string, error) {
+	paths := make([]string, 0, len(names))
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" {
+			return nil, errors.New("declared host tool name is empty")
+		}
+		path, err := exec.LookPath(name)
+		if err != nil {
+			return nil, fmt.Errorf("declared host tool %q was not found on this host", name)
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
+// isolatedCommandPath builds the PATH the evaluated agent sees.
+//
+// The base is a fixed set of system directories, so a run does not inherit
+// whatever happens to be installed on the machine. `gh` has long been an
+// implicit exception; declared tools are the explicit, recorded form of the
+// same idea.
+//
+// The returned tool paths are granted read permission in the sandbox profile,
+// which is what makes them executable there.
+func isolatedCommandPath(hostTools []string) (string, []string) {
 	if runtime.GOOS == "windows" {
 		return `C:\Windows\System32;C:\Windows`, nil
 	}
 	directories := []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"}
 	var tools []string
-	if path, err := exec.LookPath("gh"); err == nil {
+	add := func(path string) {
 		directory := filepath.Dir(path)
-		found := false
 		for _, existing := range directories {
 			if existing == directory {
-				found = true
-				break
+				return
 			}
 		}
-		if !found {
-			directories = append(directories, directory)
-			tools = append(tools, path)
+		directories = append(directories, directory)
+		tools = append(tools, path)
+	}
+	if path, err := exec.LookPath("gh"); err == nil {
+		add(path)
+	}
+	// A declared tool that cannot be resolved was already refused by
+	// ResolveSecurity, so anything missing here is ignored rather than
+	// silently changing the boundary.
+	resolved, err := resolveHostTools(hostTools)
+	if err == nil {
+		for _, path := range resolved {
+			add(path)
 		}
 	}
 	return strings.Join(directories, string(os.PathListSeparator)), tools

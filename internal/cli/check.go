@@ -15,6 +15,7 @@ type triggerFlags struct {
 	reasoningEffort string
 	sandbox         string
 	network         bool
+	hostTools       []string
 	workspace       string
 	casesPath       string
 	trials          int
@@ -52,7 +53,7 @@ func newCheckTriggerCommand(options Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			report, err := trigger.Run(command.Context(), suite, agent, trigger.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, Workspace: flags.workspace, StrictAllTrials: flags.strict})
+			report, err := trigger.Run(command.Context(), suite, agent, trigger.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, HostTools: flags.hostTools, Workspace: flags.workspace, StrictAllTrials: flags.strict})
 			if err != nil {
 				return err
 			}
@@ -65,6 +66,7 @@ func newCheckTriggerCommand(options Options) *cobra.Command {
 	command.Flags().StringVar(&flags.reasoningEffort, "reasoning-effort", "", "reasoning effort used for trigger runs")
 	command.Flags().StringVar(&flags.sandbox, "sandbox", "isolated", "Shuhari sandbox level: isolated, read-only, or unsandboxed")
 	command.Flags().BoolVar(&flags.network, "network", false, "allow network access during trigger runs")
+	command.Flags().StringArrayVar(&flags.hostTools, "allow-tool", nil, "expose a host executable to the evaluated agent, repeatable (runs otherwise see a fixed system PATH)")
 	command.Flags().StringVar(&flags.workspace, "workspace", "", "workspace root (defaults beside the skill)")
 	command.Flags().StringVar(&flags.casesPath, "cases", "", "trigger cases JSON (defaults to evals/triggers.json)")
 	command.Flags().IntVar(&flags.trials, "trials", 1, "trials per trigger case")
