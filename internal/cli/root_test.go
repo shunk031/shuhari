@@ -85,6 +85,27 @@ func TestExplicitSandboxFlagWinsOverWeakerEnvironmentValue(t *testing.T) {
 	}
 }
 
+func TestCompletionRejectsExplicitSecurityFlagsButIgnoresSandboxEnvironment(t *testing.T) {
+	root := writeValidationFixtures(t)
+	for _, extra := range [][]string{{"--sandbox", "isolated"}, {"--network", "false"}, {"--allow-tool", "git"}} {
+		command := NewRoot(Options{Version: "test"})
+		command.SetArgs(append([]string{"eval", "skill", "--validate-only", "--mode", "completion"}, append(extra, root)...))
+		command.SetOut(&bytes.Buffer{})
+		command.SetErr(&bytes.Buffer{})
+		if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "cannot be used with --mode completion") {
+			t.Fatalf("Execute(%v) error = %v, want explicit security flag rejection", extra, err)
+		}
+	}
+	t.Setenv("SHUHARI_SANDBOX", "not-a-shuhari-level")
+	command := NewRoot(Options{Version: "test"})
+	command.SetArgs([]string{"eval", "skill", "--validate-only", "--mode", "completion", root})
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&bytes.Buffer{})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("completion mode consulted SHUHARI_SANDBOX: %v", err)
+	}
+}
+
 func TestValidateOnlyRejectsUnacknowledgedUnsandboxedPolicy(t *testing.T) {
 	t.Setenv(harness.NoCredentialBoundaryAcknowledgementEnv, "")
 	root := writeValidationFixtures(t)

@@ -3,6 +3,7 @@ package trigger
 import (
 	"time"
 
+	"github.com/shunk031/shuhari/internal/harness"
 	"github.com/shunk031/shuhari/internal/progress"
 )
 
@@ -26,6 +27,7 @@ type Suite struct {
 }
 
 type Config struct {
+	Mode            harness.Mode  `json:"mode"`
 	Trials          int           `json:"trials"`
 	Jobs            int           `json:"jobs"`
 	Timeout         time.Duration `json:"timeout"`
@@ -48,11 +50,19 @@ type Report struct {
 }
 
 type Measurement struct {
-	Reads        map[string][]bool `json:"target_read"`
-	Applications map[string][]bool `json:"target_applied"`
+	Reads        map[string][]bool     `json:"target_read"`
+	Applications map[string][]bool     `json:"target_applied"`
+	Invocations  map[string][]bool     `json:"target_invoked"`
+	Decisions    map[string][]Decision `json:"decisions,omitempty"`
+}
+
+type Decision struct {
+	Invoke bool   `json:"invoke"`
+	Reason string `json:"reason"`
 }
 
 type Policy struct {
+	Mode            harness.Mode
 	Trials          int
 	StrictAllTrials bool
 }

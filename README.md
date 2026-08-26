@@ -78,7 +78,7 @@ Then run:
 shuhari eval skill path/to/csv-analyzer
 ```
 
-Each case runs with and without the skill in fresh sandboxed workspaces, a grader records assertion decisions with free-form evidence, and a blind comparator picks the more useful output. Results land in an iteration workspace next to the skill:
+In agentic mode, each case runs with and without the skill in fresh sandboxed workspaces, a grader records assertion decisions with free-form evidence, and a blind comparator picks the more useful output. Results land in an iteration workspace next to the skill:
 
 ```text
 csv-analyzer-workspace/
@@ -92,6 +92,14 @@ csv-analyzer-workspace/
 ```
 
 Artifact contracts are the JSON Schemas under [`schemas/`](schemas/).
+
+To measure answer quality without agent tools or a sandbox, opt into completion mode:
+
+```sh
+shuhari eval skill path/to/csv-analyzer --mode completion
+```
+
+Completion mode makes one no-tools model call per case. Both arms receive the task and its case fixtures in the prompt; only the guided arm receives the target guidance. It does not create an agent workspace, and it rejects explicitly supplied `--sandbox`, `--network`, and `--allow-tool` flags; agentic mode remains the default. The manifest and benchmark record `mode: "completion"` and `security: null` so the provenance is explicit.
 
 ### Evaluate instructions
 
@@ -129,6 +137,12 @@ shuhari check trigger path/to/csv-analyzer --trials 3 --jobs 2 --timeout 600
 
 By default, positive and negative cases use per-case majority to tolerate one nondeterministic outcome in three trials. Pass `--strict-all-trials` when every trial must match `should_trigger`.
 
+Completion mode checks the same cases with one structured no-tools model decision per case and trial. The decision receives the prompt, skill name, and skill description, and records `{ "invoke": true|false, "reason": "..." }` in the trigger artifacts:
+
+```sh
+shuhari check trigger path/to/csv-analyzer --mode completion
+```
+
 ### Add a repository gate
 
 Shuhari owns the evaluation mechanism; your repository owns file selection and policy values. Write them explicitly in a [pre-commit](https://github.com/pre-commit/pre-commit) hook or CI job:
@@ -151,6 +165,8 @@ Exit status: `0` pass, `1` evaluation or trigger failure, `2` invalid input or e
 ### Configure evaluation runs
 
 Runs are sandboxed and offline by default; pass `--network` for cases that need it. They also see a fixed system `PATH`, so a skill whose subject is a tool installed elsewhere needs that tool named: `--allow-tool uv --allow-tool pre-commit`. A declared tool that is not on the host refuses the run rather than evaluating without it. Every run writes a fresh iteration with timing, grading, comparison, benchmark, and failure receipts.
+
+Use `--mode completion` when the claim under test is an answer or decision and the case does not require tool execution. Completion mode is opt-in, has no tools, sandbox, network, or isolated agent workspace, and rejects only explicitly supplied `--sandbox`, `--network`, and `--allow-tool` flags. The `--agent-executable` override is used in both modes.
 
 Credential handling is documented in the [credential boundary](docs/architecture.md#credential-boundary). If the agent's sandbox cannot start but the environment is already isolated (a CI runner or container), disable it explicitly — Shuhari refuses this without the acknowledgement and labels the verdict:
 

@@ -5,7 +5,8 @@
   "type": "object",
   "properties": {
     "schema_version": { "const": "2" },
-    "security": { "$ref": "#/$defs/security" },
+    "mode": { "enum": ["agentic", "completion"] },
+    "security": { "oneOf": [{ "$ref": "#/$defs/security" }, { "type": "null" }] },
     "run_summary": { "type": "object" },
     "assertion_analysis": {
       "type": "array",
@@ -23,7 +24,7 @@
       }
     }
   },
-  "required": ["schema_version", "security", "run_summary", "assertion_analysis"],
+  "required": ["schema_version", "mode", "security", "run_summary", "assertion_analysis"],
   "additionalProperties": false,
   "$defs": {
     "security": {

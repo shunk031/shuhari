@@ -33,10 +33,11 @@ type BenchmarkSummary struct {
 }
 
 type Benchmark struct {
-	SchemaVersion     string                     `json:"schema_version"`
-	Security          harness.SecurityResolution `json:"security"`
-	RunSummary        BenchmarkSummary           `json:"run_summary"`
-	AssertionAnalysis []AssertionAnalysis        `json:"assertion_analysis"`
+	SchemaVersion     string                      `json:"schema_version"`
+	Mode              harness.Mode                `json:"mode"`
+	Security          *harness.SecurityResolution `json:"security"`
+	RunSummary        BenchmarkSummary            `json:"run_summary"`
+	AssertionAnalysis []AssertionAnalysis         `json:"assertion_analysis"`
 }
 
 type AssertionAnalysis struct {

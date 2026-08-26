@@ -19,3 +19,9 @@ Write cases that isolate one observable behavior and provide every input they ne
 ## Evidence
 
 - Judges record concise free-form evidence, such as a quote or file reference. Shuhari stores it as returned; deterministic checks belong in verification scripts.
+
+## Completion mode
+
+Use `--mode completion` for a fast no-tools evaluation when the behavior under test is an answer or decision rather than a filesystem or tool action. Each behavior arm receives one model call; both arms receive the task and fixture contents in their prompts, while only the guided arm receives the target text. Completion artifacts record the mode and a null security boundary.
+
+Trigger completion mode is a separate one-call decision: the model receives the case prompt, skill name, and skill description and returns structured `invoke` and `reason` fields. The result is recorded as `target_invoked` and in the per-trial `decisions` map; completion artifacts do not claim that the skill was read or applied.

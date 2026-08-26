@@ -71,6 +71,22 @@ func resolveSecurityFlags(command *cobra.Command, sandbox *string, network bool)
 	return nil
 }
 
+func resolveModeFlag(command *cobra.Command, value string) (harness.Mode, error) {
+	mode, err := harness.ParseMode(value)
+	if err != nil {
+		return "", err
+	}
+	if mode != harness.ModeCompletion {
+		return mode, nil
+	}
+	for _, flag := range []string{"sandbox", "network", "allow-tool"} {
+		if command.Flags().Changed(flag) {
+			return "", fmt.Errorf("--%s cannot be used with --mode completion; completion mode has no tools or sandbox", flag)
+		}
+	}
+	return mode, nil
+}
+
 func printReport(command *cobra.Command, name string, passed bool, workspace string, reasons []string) error {
 	status := "passed"
 	if !passed {

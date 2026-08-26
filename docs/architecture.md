@@ -49,6 +49,8 @@ Two integration boundaries remain open. The staged-target wrapper that maps pre-
 - `internal/trigger` loads near-miss and positive cases, records consultation, judges application, applies trigger policy, and writes trigger evidence.
 - `internal/harness` defines the agent-neutral request, result, and security-resolution boundary and contains the Codex adapter. It gives the Codex client an isolated `CODEX_HOME`, gives model-generated commands a separate minimal environment, invokes `codex exec --ephemeral --json`, and parses structured events.
 
+Both evaluation and trigger commands accept `--mode agentic|completion`; agentic is the default. Completion mode sends a single no-tools, no-workspace request for each behavior arm or trigger case and records the mode with a null security value.
+
 There is no public Go SDK or dynamic plugin registry. A new agent is added as a concrete harness implementation only after it passes the adapter conformance suite. The CLI schemas, workspace layout, and repository policy remain independent of that adapter.
 
 ## Evaluation flow
@@ -64,7 +66,11 @@ There is no public Go SDK or dynamic plugin registry. A new agent is added as a 
 
 Judge evidence is free-form supporting material and is recorded without matcher or threshold checks. Deterministic checks belong in verification scripts.
 
+In completion mode, step 4 is replaced by an inline prompt: the guided arm receives the target text and fixture contents, the baseline arm receives the task and fixture contents without target guidance, and neither arm receives a work directory or security resolution. Graders and comparators also receive their artifact views inline and run as no-tools completion requests.
+
 Trigger checks record consultation separately from application. Read evidence accumulates only from successful pre-response commands that reference the target. The body is split into nonblank, byte-weighted chunks of at most 128 bytes; a read requires at least 90% cumulative coverage. A trial with no read is not applied. After a read, a structured judge using the trial's resolved security classifies the transcript as applied, declined, or ambiguous; ambiguity fails closed. A case passes when at least `floor(trials/2)+1` application outcomes match `should_trigger`; `--strict-all-trials` raises that requirement to every trial.
+
+In completion mode, trigger checks skip command consultation and ask for one structured `{ "invoke": true|false, "reason": "..." }` decision using the case prompt and the skill's name and description. The decision is stored in `application.json` and the `decisions` map, while `target_invoked` applies the normal majority or strict policy to `invoke`; completion artifacts do not record filesystem reads or application.
 
 ## Progress reporting
 
@@ -77,6 +83,8 @@ Grading and comparison honour `--jobs` alongside the run phase. They were sequen
 ## Execution security contract
 
 Shuhari exposes neutral security levels. Native agent mode names are adapter details, not accepted `--sandbox` or `SHUHARI_SANDBOX` values.
+
+Completion mode has no execution-security boundary because it exposes no tools or workspace. The CLI rejects explicitly supplied `--sandbox`, `--network`, and `--allow-tool` flags in that mode; their defaults and environment handling are not interpreted as completion policy.
 
 ### Neutral sandbox levels
 
