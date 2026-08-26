@@ -7,7 +7,7 @@ harness implementers, and gate operators. It follows the Agent Skills evaluation
 
 Execution and judge invocation failures are fatal only when setup, security,
 transport, timeout, or output structure prevents grading. A valid `passed:false`
-result is retained as a side-specific failed assertion. Trial policy, benchmark aggregation, and blind comparison determine the evaluation result. Trigger certification separately requires `target_read` to show that the target was read and `target_applied` to show that the application judge saw the skill applied; each must match its case's `should_trigger` policy.
+result is retained as a side-specific failed assertion. Trial policy, benchmark aggregation, and blind comparison determine the evaluation result. Trigger certification separately requires agentic `target_read` to show that the target was read and `target_applied` to show that the application judge saw the skill applied; each must match its case's `should_trigger` policy. Completion trigger certification uses `target_invoked`, which records the model's structured invoke decision without claiming a filesystem read or application.
 
 ## Judge inputs and blindness
 
@@ -24,6 +24,8 @@ For each case and trial, Shuhari deterministically maps the two configurations t
 
 The grader's current working directory contains a copied artifact tree for that side. It does not contain the other side, a skill name, or a candidate/baseline identity. The grader reads files itself; artifacts are not rendered into its prompt. The resolved `judge_security` policy is recorded in `manifest.json`.
 An acknowledged unsandboxed resolution keeps the blinded copied tree but does not provide a kernel boundary.
+
+Completion mode keeps the same blind labels and output contracts but renders each artifact into the judge prompt and makes the judge call without tools or a work directory. It records `mode: "completion"` and `security: null` in the manifest and benchmark.
 
 ## Grading output
 

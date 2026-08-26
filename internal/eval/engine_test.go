@@ -3,8 +3,10 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +18,37 @@ import (
 type evalHarness struct {
 	mu       sync.Mutex
 	requests []harness.Request
+}
+
+type orderingHarness struct {
+	events []string
+}
+
+func (*orderingHarness) Probe(context.Context, ...harness.SecurityResolution) (harness.Identity, error) {
+	return harness.Identity{}, errors.New("probe should not run")
+}
+
+func (h *orderingHarness) Capabilities() harness.Capabilities {
+	h.events = append(h.events, "capabilities")
+	return harness.Capabilities{Instructions: true}
+}
+
+func (h *orderingHarness) ResolveSecurity(_ context.Context, policy harness.SecurityPolicy) (harness.SecurityResolution, error) {
+	h.events = append(h.events, "resolve security")
+	return harness.SecurityResolution{
+		SandboxLevel:       policy.Level,
+		NetworkAccess:      harness.NetworkDenied,
+		CredentialBoundary: harness.CredentialBoundaryEnforced,
+		Adapter: harness.AdapterSecurity{
+			Name:         "fake",
+			NativeMode:   "fake-" + string(policy.Level),
+			PolicyDigest: "sha256:" + strings.Repeat("a", 64),
+		},
+	}, nil
+}
+
+func (*orderingHarness) Run(context.Context, harness.Request) (harness.Result, error) {
+	return harness.Result{}, errors.New("run should not start")
 }
 
 func (h *evalHarness) Probe(context.Context, ...harness.SecurityResolution) (harness.Identity, error) {
@@ -83,6 +116,18 @@ func (h *evalHarness) Run(_ context.Context, request harness.Request) (harness.R
 
 func judgeAttempts() harness.AttemptEvidence {
 	return harness.AttemptEvidence{AttemptCount: 2, AttemptErrors: []harness.AttemptError{{Attempt: 1, Error: "temporary disconnect", Timestamp: time.Now().UTC(), DurationMS: 1, StdoutBytes: 1, StderrBytes: 1}}}
+}
+
+func TestAgenticRunResolvesSecurityBeforeCapabilityGate(t *testing.T) {
+	agent := &orderingHarness{}
+	suite := Suite{Kind: harness.TargetSkill, Name: "demo"}
+	_, err := Run(context.Background(), suite, agent, Config{SandboxLevel: string(harness.SandboxReadOnly), Trials: 1, Jobs: 1, Timeout: time.Second})
+	if err == nil || err.Error() != "selected agent does not support skill evaluation" {
+		t.Fatalf("Run() error = %v, want agentic capability error after security resolution", err)
+	}
+	if got, want := agent.events, []string{"resolve security", "capabilities"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("agentic setup order = %v, want %v", got, want)
+	}
 }
 
 func formatInt(value int) string {

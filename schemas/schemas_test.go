@@ -39,6 +39,40 @@ func TestTriggerApplicationSchemaRejectsContradictoryVerdict(t *testing.T) {
 	}
 }
 
+func TestTriggerSchemasKeepCompletionProvenanceSeparate(t *testing.T) {
+	completion := map[string]any{
+		"schema_version": "3",
+		"mode":           "completion",
+		"security":       nil,
+		"decision_rule":  "majority",
+		"passed":         true,
+		"target_invoked": map[string]any{"case": []any{true}},
+	}
+	if err := Validate("trigger", completion); err != nil {
+		t.Fatalf("Validate(trigger) rejected completion provenance: %v", err)
+	}
+	completion["target_applied"] = map[string]any{"case": []any{true}}
+	if err := Validate("trigger", completion); err == nil {
+		t.Fatal("Validate(trigger) accepted completion target_applied provenance")
+	}
+
+	application := map[string]any{
+		"schema_version": "1",
+		"mode":           "completion",
+		"target_invoked": true,
+		"verdict":        "invoked",
+		"evidence":       "The model decided to invoke the skill.",
+		"decision":       map[string]any{"invoke": true, "reason": "The prompt matches."},
+	}
+	if err := Validate("trigger-application", application); err != nil {
+		t.Fatalf("Validate(trigger-application) rejected completion provenance: %v", err)
+	}
+	application["applied"] = false
+	if err := Validate("trigger-application", application); err == nil {
+		t.Fatal("Validate(trigger-application) accepted completion applied provenance")
+	}
+}
+
 func TestReferenceGradingSchemaUsesFreeFormEvidence(t *testing.T) {
 	grading := map[string]any{
 		"expectations": []any{

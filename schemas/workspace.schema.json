@@ -5,18 +5,19 @@
   "type": "object",
   "properties": {
     "schema_version": { "const": "2" },
+    "mode": { "enum": ["agentic", "completion"] },
     "created_at": { "type": "string", "format": "date-time" },
     "target_kind": { "enum": ["skill", "instructions"] },
     "target_name": { "type": "string", "minLength": 1 },
     "suite_digest": { "type": "string", "minLength": 1 },
     "agent_identity": { "type": "object" },
     "config": { "type": "object" },
-    "security": { "$ref": "#/$defs/security" },
-    "judge_security": { "$ref": "#/$defs/security" },
+    "security": { "oneOf": [{ "$ref": "#/$defs/security" }, { "type": "null" }] },
+    "judge_security": { "oneOf": [{ "$ref": "#/$defs/security" }, { "type": "null" }] },
     "grader_prompt_digest": { "type": "string", "minLength": 1 },
     "comparator_prompt_digest": { "type": "string", "minLength": 1 }
   },
-  "required": ["schema_version", "created_at", "target_kind", "target_name", "suite_digest", "agent_identity", "config", "security"],
+  "required": ["schema_version", "mode", "created_at", "target_kind", "target_name", "suite_digest", "agent_identity", "config", "security"],
   "additionalProperties": false,
   "$defs": {
     "security": {

@@ -14,6 +14,29 @@ const (
 	TargetInstructions TargetKind = "instructions"
 )
 
+type Mode string
+
+const (
+	ModeAgentic    Mode = "agentic"
+	ModeCompletion Mode = "completion"
+)
+
+func ParseMode(value string) (Mode, error) {
+	switch Mode(value) {
+	case ModeAgentic, ModeCompletion:
+		return Mode(value), nil
+	default:
+		return "", fmt.Errorf("unsupported evaluation mode %q; choose agentic or completion", value)
+	}
+}
+
+func EffectiveMode(requested Mode) (Mode, error) {
+	if requested == "" {
+		return ModeAgentic, nil
+	}
+	return ParseMode(string(requested))
+}
+
 // EvalDefinitionDir is the skill-relative directory that holds a skill's eval
 // and trigger definitions.
 //
@@ -38,6 +61,7 @@ type Target struct {
 }
 
 type Request struct {
+	Mode            Mode
 	WorkDir         string
 	Prompt          string
 	Target          *Target

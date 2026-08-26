@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shunk031/shuhari/internal/harness"
 )
 
 func TestCasePassUsesMajorityForPositive(t *testing.T) {
@@ -148,21 +150,35 @@ func TestApplyPolicySeparatesMeasurementFromAcceptance(t *testing.T) {
 
 	suite := Suite{Cases: []Case{{ID: "positive", ShouldTrigger: true}, {ID: "negative", ShouldTrigger: false}}}
 	measurement := Measurement{Applications: map[string][]bool{"positive": {true, false, true}, "negative": {false, true, false}}}
-	reasons := ApplyPolicy(suite, measurement, Policy{Trials: 3})
+	reasons := ApplyPolicy(suite, measurement, Policy{Mode: harness.ModeAgentic, Trials: 3})
 	if len(reasons) != 0 {
 		t.Fatalf("reasons = %v, want positive and negative majority pass", reasons)
 	}
 
 	measurement.Applications["negative"] = []bool{true, true, false}
-	reasons = ApplyPolicy(suite, measurement, Policy{Trials: 3})
+	reasons = ApplyPolicy(suite, measurement, Policy{Mode: harness.ModeAgentic, Trials: 3})
 	if len(reasons) != 1 || !strings.Contains(reasons[0], "negative") {
 		t.Fatalf("reasons = %v, want systematic negative over-trigger failure", reasons)
 	}
 
 	measurement.Applications["negative"] = []bool{false, true, false}
-	reasons = ApplyPolicy(suite, measurement, Policy{Trials: 3, StrictAllTrials: true})
+	reasons = ApplyPolicy(suite, measurement, Policy{Mode: harness.ModeAgentic, Trials: 3, StrictAllTrials: true})
 	if len(reasons) != 2 || !strings.Contains(strings.Join(reasons, " "), "positive") || !strings.Contains(strings.Join(reasons, " "), "negative") {
 		t.Fatalf("strict reasons = %v, want positive miss and negative read failures", reasons)
+	}
+
+	measurement = Measurement{
+		Applications: map[string][]bool{"positive": {false, false, false}, "negative": {true, true, true}},
+		Invocations:  map[string][]bool{"positive": {true, false, true}, "negative": {false, true, false}},
+	}
+	reasons = ApplyPolicy(suite, measurement, Policy{Mode: harness.ModeCompletion, Trials: 3})
+	if len(reasons) != 0 {
+		t.Fatalf("completion reasons = %v, want invoke decisions to pass independently of applications", reasons)
+	}
+	measurement.Invocations["negative"] = []bool{true, true, false}
+	reasons = ApplyPolicy(suite, measurement, Policy{Mode: harness.ModeCompletion, Trials: 3})
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "negative") {
+		t.Fatalf("completion reasons = %v, want invoke decision failure", reasons)
 	}
 }
 

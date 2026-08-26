@@ -32,41 +32,67 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, config Config)
 	if config.Trials < 1 || config.Jobs < 1 || config.Timeout <= 0 {
 		return Report{}, errors.New("trials, jobs, and timeout must be positive")
 	}
-	level, err := harness.EffectiveSandboxLevel(config.SandboxLevel)
+	mode, err := harness.EffectiveMode(config.Mode)
 	if err != nil {
 		return Report{}, err
 	}
-	config.SandboxLevel = string(level)
-	runPolicy := harness.SecurityPolicy{Level: level, Network: config.Network, HostTools: config.HostTools}
-	runSecurity, err := agent.ResolveSecurity(ctx, runPolicy)
-	if err != nil {
-		return Report{}, err
-	}
-	if err := harness.ValidateSecurityResolution(runPolicy, runSecurity); err != nil {
-		return Report{}, fmt.Errorf("security resolution: %w", err)
-	}
-	judgePolicy := harness.SecurityPolicy{Level: harness.SandboxReadOnly, Network: false}
-	judgeSecurity := runSecurity
-	if runPolicy.Level == harness.SandboxUnsandboxed {
-		judgePolicy = runPolicy
-	}
-	if !judgePolicy.Equal(runPolicy) {
-		judgeSecurity, err = agent.ResolveSecurity(ctx, judgePolicy)
+	config.Mode = mode
+	var level harness.SandboxLevel
+	var runSecurity, judgeSecurity harness.SecurityResolution
+	var runSecurityArtifact, judgeSecurityArtifact *harness.SecurityResolution
+	if mode == harness.ModeCompletion {
+		config.SandboxLevel = ""
+		capabilities := agent.Capabilities()
+		if suite.Kind == harness.TargetSkill && !capabilities.Skills {
+			return Report{}, errors.New("selected agent does not support skill evaluation")
+		}
+		if suite.Kind == harness.TargetInstructions && !capabilities.Instructions {
+			return Report{}, errors.New("selected agent does not support instructions evaluation")
+		}
+	} else {
+		level, err = harness.EffectiveSandboxLevel(config.SandboxLevel)
 		if err != nil {
-			return Report{}, fmt.Errorf("resolve judge security: %w", err)
+			return Report{}, err
+		}
+		config.SandboxLevel = string(level)
+		runPolicy := harness.SecurityPolicy{Level: level, Network: config.Network, HostTools: config.HostTools}
+		runSecurity, err = agent.ResolveSecurity(ctx, runPolicy)
+		if err != nil {
+			return Report{}, err
+		}
+		if err := harness.ValidateSecurityResolution(runPolicy, runSecurity); err != nil {
+			return Report{}, fmt.Errorf("security resolution: %w", err)
+		}
+		judgePolicy := harness.SecurityPolicy{Level: harness.SandboxReadOnly, Network: false}
+		judgeSecurity = runSecurity
+		if runPolicy.Level == harness.SandboxUnsandboxed {
+			judgePolicy = runPolicy
+		}
+		if !judgePolicy.Equal(runPolicy) {
+			judgeSecurity, err = agent.ResolveSecurity(ctx, judgePolicy)
+			if err != nil {
+				return Report{}, fmt.Errorf("resolve judge security: %w", err)
+			}
+		}
+		if err := harness.ValidateSecurityResolution(judgePolicy, judgeSecurity); err != nil {
+			return Report{}, fmt.Errorf("judge security resolution: %w", err)
+		}
+		runSecurityArtifact = &runSecurity
+		judgeSecurityArtifact = &judgeSecurity
+		capabilities := agent.Capabilities()
+		if suite.Kind == harness.TargetSkill && !capabilities.Skills {
+			return Report{}, errors.New("selected agent does not support skill evaluation")
+		}
+		if suite.Kind == harness.TargetInstructions && !capabilities.Instructions {
+			return Report{}, errors.New("selected agent does not support instructions evaluation")
 		}
 	}
-	if err := harness.ValidateSecurityResolution(judgePolicy, judgeSecurity); err != nil {
-		return Report{}, fmt.Errorf("judge security resolution: %w", err)
+	var identity harness.Identity
+	if mode == harness.ModeCompletion {
+		identity, err = agent.Probe(ctx)
+	} else {
+		identity, err = agent.Probe(ctx, runSecurity, judgeSecurity)
 	}
-	capabilities := agent.Capabilities()
-	if suite.Kind == harness.TargetSkill && !capabilities.Skills {
-		return Report{}, errors.New("selected agent does not support skill evaluation")
-	}
-	if suite.Kind == harness.TargetInstructions && !capabilities.Instructions {
-		return Report{}, errors.New("selected agent does not support instructions evaluation")
-	}
-	identity, err := agent.Probe(ctx, runSecurity, judgeSecurity)
 	if err != nil {
 		return Report{}, err
 	}
@@ -78,7 +104,7 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, config Config)
 	if err != nil {
 		return Report{}, err
 	}
-	if err := writeManifest(iteration, suite, digest, identity, config, runSecurity, judgeSecurity); err != nil {
+	if err := writeManifest(iteration, suite, digest, identity, config, runSecurityArtifact, judgeSecurityArtifact); err != nil {
 		return Report{Workspace: iteration}, err
 	}
 	withVariant, withoutVariant := variantsFor(suite.Kind)
@@ -109,9 +135,13 @@ func Run(ctx context.Context, suite Suite, agent harness.Harness, config Config)
 		return Report{Workspace: iteration}, err
 	}
 	benchmark := buildBenchmark(graded)
-	benchmark.Security = runSecurity
-	if err := harness.ValidateSecurityResolution(runPolicy, benchmark.Security); err != nil {
-		return Report{Workspace: iteration}, fmt.Errorf("validate benchmark security: %w", err)
+	benchmark.Mode = config.Mode
+	benchmark.Security = runSecurityArtifact
+	if runSecurityArtifact != nil {
+		runPolicy := harness.SecurityPolicy{Level: level, Network: config.Network, HostTools: config.HostTools}
+		if err := harness.ValidateSecurityResolution(runPolicy, *benchmark.Security); err != nil {
+			return Report{Workspace: iteration}, fmt.Errorf("validate benchmark security: %w", err)
+		}
 	}
 	if err := contracts.Validate("benchmark", benchmark); err != nil {
 		return Report{Workspace: iteration}, err
@@ -169,24 +199,27 @@ func allTrialsPass(values []bool) bool {
 	return true
 }
 
-func writeManifest(iteration string, suite Suite, suiteDigest string, identity harness.Identity, config Config, security, judgeSecurity harness.SecurityResolution) error {
-	policy := harness.SecurityPolicy{Level: harness.SandboxLevel(config.SandboxLevel), Network: config.Network, HostTools: config.HostTools}
-	if err := harness.ValidateSecurityResolution(policy, security); err != nil {
-		return fmt.Errorf("validate manifest security: %w", err)
+func writeManifest(iteration string, suite Suite, suiteDigest string, identity harness.Identity, config Config, security, judgeSecurity *harness.SecurityResolution) error {
+	if security != nil {
+		policy := harness.SecurityPolicy{Level: harness.SandboxLevel(config.SandboxLevel), Network: config.Network, HostTools: config.HostTools}
+		if err := harness.ValidateSecurityResolution(policy, *security); err != nil {
+			return fmt.Errorf("validate manifest security: %w", err)
+		}
 	}
 	manifest := struct {
-		SchemaVersion    string                     `json:"schema_version"`
-		CreatedAt        time.Time                  `json:"created_at"`
-		TargetKind       harness.TargetKind         `json:"target_kind"`
-		TargetName       string                     `json:"target_name"`
-		SuiteDigest      string                     `json:"suite_digest"`
-		AgentIdentity    harness.Identity           `json:"agent_identity"`
-		Config           Config                     `json:"config"`
-		Security         harness.SecurityResolution `json:"security"`
-		JudgeSecurity    harness.SecurityResolution `json:"judge_security"`
-		GraderDigest     string                     `json:"grader_prompt_digest"`
-		ComparatorDigest string                     `json:"comparator_prompt_digest"`
-	}{SchemaVersion: workspaceManifestSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: suite.Kind, TargetName: suite.Name, SuiteDigest: suiteDigest, AgentIdentity: identity, Config: config, Security: security, JudgeSecurity: judgeSecurity, GraderDigest: promptDigest(graderPrompt), ComparatorDigest: promptDigest(comparatorPrompt)}
+		SchemaVersion    string                      `json:"schema_version"`
+		CreatedAt        time.Time                   `json:"created_at"`
+		TargetKind       harness.TargetKind          `json:"target_kind"`
+		TargetName       string                      `json:"target_name"`
+		SuiteDigest      string                      `json:"suite_digest"`
+		AgentIdentity    harness.Identity            `json:"agent_identity"`
+		Config           Config                      `json:"config"`
+		Mode             harness.Mode                `json:"mode"`
+		Security         *harness.SecurityResolution `json:"security"`
+		JudgeSecurity    *harness.SecurityResolution `json:"judge_security"`
+		GraderDigest     string                      `json:"grader_prompt_digest"`
+		ComparatorDigest string                      `json:"comparator_prompt_digest"`
+	}{SchemaVersion: workspaceManifestSchemaVersion, CreatedAt: time.Now().UTC(), TargetKind: suite.Kind, TargetName: suite.Name, SuiteDigest: suiteDigest, AgentIdentity: identity, Config: config, Mode: config.Mode, Security: security, JudgeSecurity: judgeSecurity, GraderDigest: promptDigest(graderPrompt), ComparatorDigest: promptDigest(comparatorPrompt)}
 	if err := contracts.Validate("workspace", manifest); err != nil {
 		return err
 	}
@@ -250,6 +283,9 @@ func executeTasks(ctx context.Context, suite Suite, agent harness.Harness, confi
 }
 
 func executeTask(ctx context.Context, suite Suite, agent harness.Harness, config Config, security harness.SecurityResolution, iteration string, task runTask) (runResult, error) {
+	if config.Mode == harness.ModeCompletion {
+		return executeCompletionTask(ctx, suite, agent, config, iteration, task)
+	}
 	runDir := runDirectory(iteration, task.Case.ID, task.Variant, task.Trial)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return runResult{}, fmt.Errorf("create run directory: %w", err)
@@ -303,6 +339,46 @@ func executeTask(ctx context.Context, suite Suite, agent harness.Harness, config
 	return runResult{Case: task.Case, Trial: task.Trial, Variant: task.Variant, RunDir: runDir, Agent: result, OutputPath: artifactDir, Artifact: artifact}, nil
 }
 
+func executeCompletionTask(ctx context.Context, suite Suite, agent harness.Harness, config Config, iteration string, task runTask) (runResult, error) {
+	runDir := runDirectory(iteration, task.Case.ID, task.Variant, task.Trial)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return runResult{}, fmt.Errorf("create completion run directory: %w", err)
+	}
+	withVariant, _ := variantsFor(suite.Kind)
+	prompt, err := buildCompletionPrompt(suite, task.Case, task.Variant == withVariant)
+	if err != nil {
+		return runResult{}, err
+	}
+	result, err := agent.Run(ctx, harness.Request{Mode: harness.ModeCompletion, Prompt: prompt, Model: config.Model, ReasoningEffort: config.ReasoningEffort, Timeout: config.Timeout})
+	if err != nil {
+		runErr := fmt.Errorf("%s trial %d %s: %w", task.Case.ID, task.Trial, task.Variant, err)
+		if attempts := harness.AttemptsFromError(err); attempts.AttemptCount > 0 {
+			if writeErr := receipt.WriteTiming(filepath.Join(runDir, "timing.json"), harness.Usage{}, 0, attempts); writeErr != nil {
+				return runResult{}, errors.Join(runErr, writeErr)
+			}
+		}
+		return runResult{}, runErr
+	}
+	artifactDir := filepath.Join(runDir, "outputs")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		return runResult{}, fmt.Errorf("create completion output directory: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "response.md"), []byte(strings.TrimSpace(result.Response)+"\n"), 0o644); err != nil {
+		return runResult{}, fmt.Errorf("write response artifact: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "transcript.jsonl"), result.Transcript, 0o644); err != nil {
+		return runResult{}, fmt.Errorf("write transcript: %w", err)
+	}
+	if err := receipt.WriteTiming(filepath.Join(runDir, "timing.json"), result.Usage, result.Duration, result.Attempts); err != nil {
+		return runResult{}, err
+	}
+	artifact, err := renderArtifact(artifactDir)
+	if err != nil {
+		return runResult{}, err
+	}
+	return runResult{Case: task.Case, Trial: task.Trial, Variant: task.Variant, RunDir: runDir, Agent: result, OutputPath: artifactDir, Artifact: artifact}, nil
+}
+
 func buildRunPrompt(item Case, files []string, outputDir string, target *harness.Target) string {
 	var builder strings.Builder
 	builder.WriteString("Execute this task in the current workspace.\n")
@@ -315,6 +391,41 @@ func buildRunPrompt(item Case, files []string, outputDir string, target *harness
 	}
 	fmt.Fprintf(&builder, "- Save all produced files under: %s\n", outputDir)
 	return builder.String()
+}
+
+func buildCompletionPrompt(suite Suite, item Case, withGuidance bool) (string, error) {
+	var builder strings.Builder
+	builder.WriteString("Answer this evaluation task in one response. Do not use tools or modify files.\n")
+	if withGuidance {
+		contents, label, err := completionTarget(suite)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&builder, "\n--- begin %s ---\n%s\n--- end %s ---\n", label, strings.TrimRight(contents, "\n"), label)
+	}
+	fmt.Fprintf(&builder, "\nTask:\n%s\n", item.Prompt)
+	for _, relative := range item.Files {
+		contents, err := os.ReadFile(filepath.Join(suite.Root, filepath.Clean(relative)))
+		if err != nil {
+			return "", fmt.Errorf("read fixture %q for completion: %w", relative, err)
+		}
+		fmt.Fprintf(&builder, "\n--- begin fixture %s ---\n%s\n--- end fixture %s ---\n", filepath.ToSlash(relative), strings.TrimRight(string(contents), "\n"), filepath.ToSlash(relative))
+	}
+	return builder.String(), nil
+}
+
+func completionTarget(suite Suite) (string, string, error) {
+	path := suite.TargetPath
+	label := filepath.Base(path)
+	if suite.Kind == harness.TargetSkill {
+		path = filepath.Join(path, "SKILL.md")
+		label = "SKILL.md"
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", fmt.Errorf("read %s for completion: %w", label, err)
+	}
+	return string(contents), label, nil
 }
 
 // statusOf maps an error to the status field of a finish event, so a consumer

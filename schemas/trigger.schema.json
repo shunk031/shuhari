@@ -5,7 +5,8 @@
   "type": "object",
   "properties": {
     "schema_version": { "const": "3" },
-    "security": { "$ref": "#/$defs/security" },
+    "mode": { "enum": ["agentic", "completion"] },
+    "security": { "oneOf": [{ "$ref": "#/$defs/security" }, { "type": "null" }] },
     "decision_rule": { "enum": ["majority", "strict"] },
     "passed": { "type": "boolean" },
     "target_read": {
@@ -22,11 +23,49 @@
         "items": { "type": "boolean" }
       }
     },
+    "target_invoked": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "boolean" }
+      }
+    },
+    "decisions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "invoke": { "type": "boolean" },
+            "reason": { "type": "string", "minLength": 1 }
+          },
+          "required": ["invoke", "reason"],
+          "additionalProperties": false
+        }
+      }
+    },
     "reasons": { "type": "array", "items": { "type": "string" } },
     "error": { "type": "string", "minLength": 1 }
   },
-  "required": ["schema_version", "security", "decision_rule", "passed", "target_read", "target_applied"],
+  "required": ["schema_version", "mode", "security", "decision_rule", "passed"],
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "mode": { "const": "agentic" } }, "required": ["mode"] },
+      "then": {
+        "required": ["target_read", "target_applied"],
+        "not": { "required": ["target_invoked"] }
+      }
+    },
+    {
+      "if": { "properties": { "mode": { "const": "completion" } }, "required": ["mode"] },
+      "then": {
+        "required": ["target_invoked"],
+        "not": { "anyOf": [{ "required": ["target_read"] }, { "required": ["target_applied"] }] }
+      }
+    }
+  ],
   "$defs": {
     "security": {
       "type": "object",

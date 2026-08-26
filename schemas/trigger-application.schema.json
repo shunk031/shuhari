@@ -5,14 +5,49 @@
   "type": "object",
   "properties": {
     "schema_version": { "const": "1" },
+    "mode": { "enum": ["agentic", "completion"] },
     "target_read": { "type": "boolean" },
-    "verdict": { "enum": ["not_consulted", "applied", "declined", "ambiguous"] },
+    "verdict": { "enum": ["not_consulted", "applied", "declined", "ambiguous", "invoked", "not_invoked"] },
     "applied": { "type": "boolean" },
-    "evidence": { "type": "string", "minLength": 1 }
+    "target_invoked": { "type": "boolean" },
+    "evidence": { "type": "string", "minLength": 1 },
+    "decision": {
+      "type": "object",
+      "properties": {
+        "invoke": { "type": "boolean" },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "required": ["invoke", "reason"],
+      "additionalProperties": false
+    }
   },
-  "required": ["schema_version", "target_read", "verdict", "applied", "evidence"],
+  "required": ["schema_version", "verdict", "evidence"],
   "additionalProperties": false,
   "allOf": [
+    {
+      "if": { "properties": { "mode": { "const": "completion" } }, "required": ["mode"] },
+      "then": {
+        "required": ["mode", "target_invoked", "decision"],
+        "properties": { "verdict": { "enum": ["invoked", "not_invoked"] } },
+        "not": { "anyOf": [{ "required": ["target_read"] }, { "required": ["applied"] }] }
+      }
+    },
+    {
+      "if": { "properties": { "mode": { "const": "agentic" } }, "required": ["mode"] },
+      "then": {
+        "required": ["mode", "target_read", "applied"],
+        "properties": { "verdict": { "enum": ["not_consulted", "applied", "declined", "ambiguous"] } },
+        "not": { "required": ["target_invoked"] }
+      }
+    },
+    {
+      "if": { "not": { "required": ["mode"] } },
+      "then": {
+        "required": ["target_read", "applied"],
+        "properties": { "verdict": { "enum": ["not_consulted", "applied", "declined", "ambiguous"] } },
+        "not": { "required": ["target_invoked"] }
+      }
+    },
     {
       "if": { "properties": { "verdict": { "const": "not_consulted" } }, "required": ["verdict"] },
       "then": { "properties": { "target_read": { "const": false }, "applied": { "const": false } } }

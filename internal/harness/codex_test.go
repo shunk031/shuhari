@@ -821,6 +821,55 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_token
 	}
 }
 
+func TestCodexCompletionUsesOneNoToolsModelCall(t *testing.T) {
+	capture := t.TempDir()
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := fmt.Sprintf(`#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
+printf '%%s\n' "$*" > %q/args
+cat > %q/prompt
+printf '%%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"completion"}}'
+printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1,"reasoning_output_tokens":0}}'
+`, capture, capture)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "codex-home"))
+	agent := newCodex(Config{Executable: script})
+	result, err := agent.Run(context.Background(), Request{Mode: ModeCompletion, Prompt: "completion prompt", Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Response != "completion" {
+		t.Fatalf("response = %q, want completion", result.Response)
+	}
+	args, err := os.ReadFile(filepath.Join(capture, "args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments := string(args)
+	for _, required := range []string{"--disable shell_tool", "--disable apps", "--disable browser_use", "--disable computer_use", "--disable multi_agent", `web_search="disabled"`, "mcp_servers={}"} {
+		if !strings.Contains(arguments, required) {
+			t.Fatalf("completion arguments = %q, missing %q", arguments, required)
+		}
+	}
+	for _, forbidden := range []string{"--sandbox", "--cd"} {
+		if strings.Contains(arguments, forbidden) {
+			t.Fatalf("completion arguments = %q, unexpectedly contains %q", arguments, forbidden)
+		}
+	}
+	prompt, err := os.ReadFile(filepath.Join(capture, "prompt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(prompt) != "completion prompt" {
+		t.Fatalf("completion prompt = %q", prompt)
+	}
+}
+
 func TestCodexStopsAfterTwoTransportRetries(t *testing.T) {
 	t.Parallel()
 

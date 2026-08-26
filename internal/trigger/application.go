@@ -17,6 +17,7 @@ import (
 
 	"github.com/shunk031/shuhari/internal/harness"
 	"github.com/shunk031/shuhari/internal/receipt"
+	"github.com/shunk031/shuhari/internal/skill"
 	contracts "github.com/shunk031/shuhari/schemas"
 )
 
@@ -25,6 +26,12 @@ var applicationPrompt string
 
 //go:embed prompts/application-output.schema.json
 var applicationOutputSchema []byte
+
+//go:embed prompts/completion.md
+var completionPrompt string
+
+//go:embed prompts/completion-output.schema.json
+var completionOutputSchema []byte
 
 const (
 	maxApplicationJudgePromptBytes     = 512 * 1024
@@ -54,18 +61,79 @@ type applicationJudgeOutput struct {
 }
 
 type applicationArtifact struct {
-	SchemaVersion string `json:"schema_version"`
-	TargetRead    bool   `json:"target_read"`
-	Verdict       string `json:"verdict"`
-	Applied       bool   `json:"applied"`
-	Evidence      string `json:"evidence"`
+	SchemaVersion string       `json:"schema_version"`
+	Mode          harness.Mode `json:"mode,omitempty"`
+	TargetRead    *bool        `json:"target_read,omitempty"`
+	Verdict       string       `json:"verdict"`
+	Applied       *bool        `json:"applied,omitempty"`
+	TargetInvoked *bool        `json:"target_invoked,omitempty"`
+	Evidence      string       `json:"evidence"`
+	Decision      *Decision    `json:"decision,omitempty"`
+}
+
+type completionDecisionInput struct {
+	Prompt           string `json:"prompt"`
+	SkillName        string `json:"skill_name"`
+	SkillDescription string `json:"skill_description"`
+}
+
+type completionDecisionOutput struct {
+	Invoke *bool  `json:"invoke"`
+	Reason string `json:"reason"`
+}
+
+func executeCompletionCase(ctx context.Context, suite Suite, agent harness.Harness, config Config, runDir string, item Case, trial int) (applicationArtifact, error) {
+	metadata, err := skill.Load(suite.SkillPath)
+	if err != nil {
+		return applicationArtifact{}, err
+	}
+	input, err := json.Marshal(completionDecisionInput{Prompt: item.Prompt, SkillName: suite.SkillName, SkillDescription: metadata.Description})
+	if err != nil {
+		return applicationArtifact{}, fmt.Errorf("encode completion trigger input: %w", err)
+	}
+	prompt := strings.TrimSpace(completionPrompt) + "\n\n" + string(input)
+	if len(prompt) > maxApplicationJudgePromptBytes {
+		return applicationArtifact{}, fmt.Errorf("input_too_large: completion trigger prompt is %d bytes; limit is %d bytes", len(prompt), maxApplicationJudgePromptBytes)
+	}
+	result, err := agent.Run(ctx, harness.Request{Mode: harness.ModeCompletion, Prompt: prompt, Model: config.Model, ReasoningEffort: config.ReasoningEffort, Timeout: config.Timeout, OutputSchema: completionOutputSchema})
+	if err != nil {
+		if attempts := harness.AttemptsFromError(err); attempts.AttemptCount > 0 {
+			if writeErr := receipt.WriteTiming(filepath.Join(runDir, "timing.json"), harness.Usage{}, 0, attempts); writeErr != nil {
+				return applicationArtifact{}, errors.Join(err, writeErr)
+			}
+		}
+		return applicationArtifact{}, fmt.Errorf("%s trial %d: run completion trigger: %w", item.ID, trial, err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "transcript.jsonl"), result.Transcript, 0o644); err != nil {
+		return applicationArtifact{}, fmt.Errorf("write trigger transcript: %w", err)
+	}
+	if err := receipt.WriteTiming(filepath.Join(runDir, "timing.json"), result.Usage, result.Duration, result.Attempts); err != nil {
+		return applicationArtifact{}, err
+	}
+	output, err := decodeCompletionDecision(result.Response)
+	if err != nil {
+		return applicationArtifact{}, err
+	}
+	decision := Decision{Invoke: *output.Invoke, Reason: output.Reason}
+	verdict := "not_invoked"
+	if *output.Invoke {
+		verdict = "invoked"
+	}
+	artifact := applicationArtifact{SchemaVersion: applicationArtifactSchemaVersion, Mode: harness.ModeCompletion, Verdict: verdict, TargetInvoked: boolPointer(*output.Invoke), Evidence: output.Reason, Decision: &decision}
+	if err := writeApplicationArtifact(runDir, artifact); err != nil {
+		return applicationArtifact{}, err
+	}
+	return artifact, nil
 }
 
 func classifyApplication(ctx context.Context, suite Suite, agent harness.Harness, config Config, security harness.SecurityResolution, runDir string, item Case, result harness.Result) (applicationArtifact, error) {
 	if !result.TargetRead {
 		artifact := applicationArtifact{
 			SchemaVersion: applicationArtifactSchemaVersion,
+			Mode:          harness.ModeAgentic,
+			TargetRead:    boolPointer(false),
 			Verdict:       "not_consulted",
+			Applied:       boolPointer(false),
 			Evidence:      "The target skill was not read.",
 		}
 		return artifact, writeApplicationArtifact(runDir, artifact)
@@ -115,9 +183,10 @@ func classifyApplication(ctx context.Context, suite Suite, agent harness.Harness
 	}
 	artifact := applicationArtifact{
 		SchemaVersion: applicationArtifactSchemaVersion,
-		TargetRead:    true,
+		Mode:          harness.ModeAgentic,
+		TargetRead:    boolPointer(true),
 		Verdict:       output.Verdict,
-		Applied:       output.Verdict == "applied",
+		Applied:       boolPointer(output.Verdict == "applied"),
 		Evidence:      output.Evidence,
 	}
 	if err := writeApplicationArtifact(runDir, artifact); err != nil {
@@ -127,6 +196,10 @@ func classifyApplication(ctx context.Context, suite Suite, agent harness.Harness
 		return artifact, fmt.Errorf("application verdict is ambiguous: %s", output.Evidence)
 	}
 	return artifact, nil
+}
+
+func boolPointer(value bool) *bool {
+	return &value
 }
 
 func digestBytes(contents []byte) string {
@@ -233,6 +306,28 @@ func decodeApplicationJudgeOutput(response string) (applicationJudgeOutput, erro
 	}
 	if strings.TrimSpace(output.Evidence) == "" {
 		return applicationJudgeOutput{}, errors.New("application judge returned blank evidence")
+	}
+	return output, nil
+}
+
+func decodeCompletionDecision(response string) (completionDecisionOutput, error) {
+	var output completionDecisionOutput
+	decoder := json.NewDecoder(bytes.NewBufferString(response))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&output); err != nil {
+		return completionDecisionOutput{}, fmt.Errorf("decode completion trigger response: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err == nil {
+		return completionDecisionOutput{}, errors.New("decode completion trigger response: trailing JSON value")
+	} else if !errors.Is(err, io.EOF) {
+		return completionDecisionOutput{}, fmt.Errorf("decode completion trigger response: %w", err)
+	}
+	if output.Invoke == nil {
+		return completionDecisionOutput{}, errors.New("completion trigger response omitted invoke")
+	}
+	if strings.TrimSpace(output.Reason) == "" {
+		return completionDecisionOutput{}, errors.New("completion trigger response has blank reason")
 	}
 	return output, nil
 }

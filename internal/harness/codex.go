@@ -271,6 +271,12 @@ func codexSecurityPolicyDigest(policy SecurityPolicy, nativeMode string) string 
 }
 
 func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error) {
+	if request.Mode != "" && request.Mode != ModeAgentic && request.Mode != ModeCompletion {
+		return Result{}, fmt.Errorf("unsupported Codex request mode %q", request.Mode)
+	}
+	if request.Mode == ModeCompletion {
+		return h.runCompletion(ctx, request)
+	}
 	if request.WorkDir == "" {
 		return Result{}, errors.New("codex work directory is required")
 	}
@@ -337,6 +343,190 @@ func (h *codexHarness) Run(ctx context.Context, request Request) (Result, error)
 		}
 	}
 	panic("unreachable")
+}
+
+func (h *codexHarness) runCompletion(parent context.Context, request Request) (Result, error) {
+	if request.Timeout <= 0 {
+		return Result{}, errors.New("codex timeout must be positive")
+	}
+	if request.WorkDir != "" {
+		return Result{}, errors.New("completion request must not have a work directory")
+	}
+	if request.Target != nil {
+		return Result{}, errors.New("completion request must not have a target")
+	}
+	firstTokenTimeout, err := configuredFirstTokenTimeout()
+	if err != nil {
+		return Result{}, err
+	}
+	evidence := AttemptEvidence{}
+	for attempt := 1; attempt <= maxCodexAttempts; attempt++ {
+		result, observation, err := h.runCompletionOnce(parent, request, firstTokenTimeout)
+		if err == nil && strings.TrimSpace(result.Response) != "" {
+			evidence.AttemptCount = attempt
+			result.Attempts = evidence
+			return result, nil
+		}
+		if err == nil {
+			err = fmt.Errorf("%w: codex returned an empty response", ErrTransient)
+		}
+		evidence.AttemptCount = attempt
+		durationMS := observation.Duration.Milliseconds()
+		if durationMS < 1 && !observation.Timestamp.IsZero() {
+			durationMS = 1
+		}
+		evidence.AttemptErrors = append(evidence.AttemptErrors, AttemptError{
+			Attempt:     attempt,
+			Error:       err.Error(),
+			Timestamp:   observation.Timestamp,
+			DurationMS:  durationMS,
+			StdoutBytes: observation.StdoutBytes,
+			StderrBytes: observation.StderrBytes,
+		})
+		if !errors.Is(err, ErrTransient) {
+			if attempt > 1 {
+				return Result{}, &RetryError{Cause: err, Attempts: evidence}
+			}
+			return Result{}, err
+		}
+		if attempt == maxCodexAttempts {
+			return Result{}, &RetryError{Cause: err, Attempts: evidence}
+		}
+		if err := h.waitBeforeRetry(parent, attempt); err != nil {
+			return Result{}, &RetryError{Cause: err, Attempts: evidence}
+		}
+	}
+	panic("unreachable")
+}
+
+func (h *codexHarness) runCompletionOnce(parent context.Context, request Request, firstTokenTimeout time.Duration) (Result, attemptObservation, error) {
+	temporary, err := secureTemporaryDirectory("shuhari-codex-completion-")
+	if err != nil {
+		return Result{}, attemptObservation{}, fmt.Errorf("create codex completion directory: %w", err)
+	}
+	defer os.RemoveAll(temporary)
+	codexHome := filepath.Join(temporary, "codex-home")
+	if err := initializeCodexHome(codexHome); err != nil {
+		return Result{}, attemptObservation{}, err
+	}
+	ctx, cancel := context.WithTimeout(parent, request.Timeout)
+	defer cancel()
+
+	args := []string{"--disable", "plugins"}
+	for _, feature := range completionDisabledFeatures {
+		args = append(args, "--disable", feature)
+	}
+	args = append(args, "exec")
+	if request.Model != "" {
+		args = append(args, "--model", request.Model)
+	}
+	modelCatalogPath := filepath.Join(temporary, "bundled-models.json")
+	if err := writeBundledModelCatalog(ctx, h.executable, codexHome, modelCatalogPath); err != nil {
+		return Result{}, attemptObservation{}, err
+	}
+	args = append(args, "-c", "model_catalog_json="+tomlString(modelCatalogPath))
+	args = append(args, "-c", `web_search="disabled"`)
+	args = append(args, "-c", "mcp_servers={}")
+	if request.ReasoningEffort != "" {
+		value, _ := json.Marshal(request.ReasoningEffort)
+		args = append(args, "-c", "model_reasoning_effort="+string(value))
+	}
+	args = append(args, "--ephemeral", "--json", "--skip-git-repo-check")
+	if len(request.OutputSchema) > 0 {
+		schemaPath := filepath.Join(temporary, "output-schema.json")
+		if err := os.WriteFile(schemaPath, request.OutputSchema, 0o600); err != nil {
+			return Result{}, attemptObservation{}, fmt.Errorf("write output schema: %w", err)
+		}
+		args = append(args, "--output-schema", schemaPath)
+	}
+	args = append(args, "-")
+
+	command := exec.CommandContext(ctx, h.executable, args...)
+	command.Dir = temporary
+	command.Stdin = strings.NewReader(request.Prompt)
+	command.Env = codexEnvironment(codexHome)
+	started := time.Now()
+	stdout, stderr := newCodexTraceObserver(), bytes.Buffer{}
+	command.Stdout = stdout
+	command.Stderr = &stderr
+	commandDone := make(chan struct{})
+	watchdogExpired := make(chan struct{}, 1)
+	watchdogFinished := make(chan struct{})
+	go func() {
+		defer close(watchdogFinished)
+		timer := time.NewTimer(firstTokenTimeout)
+		defer timer.Stop()
+		select {
+		case <-stdout.FirstModelItem():
+		case <-commandDone:
+		case <-ctx.Done():
+		case <-timer.C:
+			select {
+			case <-stdout.FirstModelItem():
+				return
+			default:
+			}
+			watchdogExpired <- struct{}{}
+			cancel()
+		}
+	}()
+	err = command.Run()
+	close(commandDone)
+	<-watchdogFinished
+	duration := time.Since(started)
+	observation := attemptObservation{
+		Timestamp:   started.UTC(),
+		Duration:    duration,
+		StdoutBytes: int64(stdout.Len()),
+		StderrBytes: int64(stderr.Len()),
+	}
+	completed := codexTraceCompleted(stdout.Bytes())
+	select {
+	case <-watchdogExpired:
+		if completed {
+			return Result{}, observation, errors.New("codex completion first-token watchdog expired after a completed response")
+		}
+		return Result{}, observation, fmt.Errorf("%w: codex produced no model output within %s", ErrTransient, firstTokenTimeout)
+	default:
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		if completed {
+			return Result{}, observation, errors.New("codex completion timed out after a completed response")
+		}
+		return Result{}, observation, fmt.Errorf("%w: codex timed out after %s", ErrTransient, request.Timeout)
+	}
+	if err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = strings.TrimSpace(stdout.String())
+		}
+		if inputTooLargePattern.MatchString(message) {
+			return Result{}, observation, fmt.Errorf("codex completion failed: %w: %s", err, message)
+		}
+		if !completed && transientPattern.MatchString(message) {
+			return Result{}, observation, fmt.Errorf("%w: %s", ErrTransient, message)
+		}
+		return Result{}, observation, fmt.Errorf("codex completion failed: %w: %s", err, message)
+	}
+	result, err := parseCodexTrace(stdout.Bytes(), Target{})
+	if err != nil {
+		return Result{}, observation, err
+	}
+	result.Transcript = append([]byte(nil), stdout.Bytes()...)
+	result.Duration = duration
+	return result, observation, nil
+}
+
+var completionDisabledFeatures = []string{
+	"apps",
+	"browser_use",
+	"browser_use_external",
+	"code_mode",
+	"code_mode_host",
+	"computer_use",
+	"image_generation",
+	"multi_agent",
+	"shell_tool",
 }
 
 func configuredFirstTokenTimeout() (time.Duration, error) {

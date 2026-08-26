@@ -13,6 +13,7 @@ import (
 )
 
 type evalFlags struct {
+	mode                 string
 	agent                string
 	executable           string
 	model                string
@@ -44,8 +45,15 @@ func newEvalSkillCommand(options Options) *cobra.Command {
 		Short: "Evaluate an Agent Skill with and without the skill",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			if err := resolveSecurityFlags(command, &flags.sandbox, flags.network); err != nil {
+			mode, err := resolveModeFlag(command, flags.mode)
+			if err != nil {
 				return err
+			}
+			flags.mode = string(mode)
+			if mode != harness.ModeCompletion {
+				if err := resolveSecurityFlags(command, &flags.sandbox, flags.network); err != nil {
+					return err
+				}
 			}
 			paths, err := resolveSkillPaths(args)
 			if err != nil {
@@ -102,8 +110,15 @@ func newEvalInstructionsCommand(options Options) *cobra.Command {
 		Short: "Evaluate repository instructions with and without the instructions",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			if err := resolveSecurityFlags(command, &flags.sandbox, flags.network); err != nil {
+			mode, err := resolveModeFlag(command, flags.mode)
+			if err != nil {
 				return err
+			}
+			flags.mode = string(mode)
+			if mode != harness.ModeCompletion {
+				if err := resolveSecurityFlags(command, &flags.sandbox, flags.network); err != nil {
+					return err
+				}
 			}
 			suite, err := eval.LoadInstructionsSuite(args[0], evalPath)
 			if err != nil {
@@ -130,6 +145,7 @@ func newEvalInstructionsCommand(options Options) *cobra.Command {
 }
 
 func addEvalFlags(command *cobra.Command, flags *evalFlags) {
+	command.Flags().StringVar(&flags.mode, "mode", string(harness.ModeAgentic), "evaluation mode: agentic or completion")
 	command.Flags().StringVar(&flags.agent, "agent", "codex", "agent harness to use")
 	command.Flags().StringVar(&flags.executable, "agent-executable", "", "override the agent executable")
 	command.Flags().StringVar(&flags.model, "model", "", "model used for evaluated runs")
@@ -149,7 +165,7 @@ func addEvalFlags(command *cobra.Command, flags *evalFlags) {
 }
 
 func (flags evalFlags) config() eval.Config {
-	return eval.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, JudgeModel: flags.judgeModel, JudgeReasoningEffort: flags.judgeReasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, HostTools: flags.hostTools, Progress: progressReporter(flags.progressOn), Workspace: flags.workspace, StrictAllTrials: flags.strict}
+	return eval.Config{Mode: harness.Mode(flags.mode), Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, JudgeModel: flags.judgeModel, JudgeReasoningEffort: flags.judgeReasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, HostTools: flags.hostTools, Progress: progressReporter(flags.progressOn), Workspace: flags.workspace, StrictAllTrials: flags.strict}
 }
 
 func resolveSkillPaths(arguments []string) ([]string, error) {

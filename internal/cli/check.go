@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/shunk031/shuhari/internal/harness"
 	"github.com/shunk031/shuhari/internal/trigger"
 	"github.com/spf13/cobra"
 )
 
 type triggerFlags struct {
+	mode            string
 	agent           string
 	executable      string
 	model           string
@@ -39,8 +41,15 @@ func newCheckTriggerCommand(options Options) *cobra.Command {
 		Short: "Check positive and negative trigger cases",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			if err := resolveSecurityFlags(command, &flags.sandbox, flags.network); err != nil {
+			mode, err := resolveModeFlag(command, flags.mode)
+			if err != nil {
 				return err
+			}
+			flags.mode = string(mode)
+			if mode != harness.ModeCompletion {
+				if err := resolveSecurityFlags(command, &flags.sandbox, flags.network); err != nil {
+					return err
+				}
 			}
 			suite, err := trigger.LoadSuite(args[0], flags.casesPath)
 			if err != nil {
@@ -54,13 +63,14 @@ func newCheckTriggerCommand(options Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			report, err := trigger.Run(command.Context(), suite, agent, trigger.Config{Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, HostTools: flags.hostTools, Progress: progressReporter(flags.progressOn), Workspace: flags.workspace, StrictAllTrials: flags.strict})
+			report, err := trigger.Run(command.Context(), suite, agent, trigger.Config{Mode: harness.Mode(flags.mode), Trials: flags.trials, Jobs: flags.jobs, Timeout: time.Duration(flags.timeoutSeconds) * time.Second, Model: flags.model, ReasoningEffort: flags.reasoningEffort, SandboxLevel: flags.sandbox, Network: flags.network, HostTools: flags.hostTools, Progress: progressReporter(flags.progressOn), Workspace: flags.workspace, StrictAllTrials: flags.strict})
 			if err != nil {
 				return err
 			}
 			return printReport(command, suite.SkillName, report.Passed, report.Workspace, report.Reasons)
 		},
 	}
+	command.Flags().StringVar(&flags.mode, "mode", string(harness.ModeAgentic), "evaluation mode: agentic or completion")
 	command.Flags().StringVar(&flags.agent, "agent", "codex", "agent harness to use")
 	command.Flags().StringVar(&flags.executable, "agent-executable", "", "override the agent executable")
 	command.Flags().StringVar(&flags.model, "model", "", "model used for trigger runs")

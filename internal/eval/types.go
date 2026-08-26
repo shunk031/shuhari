@@ -32,6 +32,7 @@ func (c Case) effectiveAssertions() []string {
 }
 
 type Config struct {
+	Mode                 harness.Mode  `json:"mode"`
 	Trials               int           `json:"trials"`
 	Jobs                 int           `json:"jobs"`
 	Timeout              time.Duration `json:"timeout"`
