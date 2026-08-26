@@ -1,0 +1,15 @@
+# Minimum mise version compatible with this repository's configuration.
+min_version = "2026.8.2"
+
+[tools]
+# Keep each group sorted by package name, ignoring backend prefixes.
+
+# The Go toolchain is not pinned here. `go.mod` already declares it and CI
+# resolves it with `go-version-file`, so a second pin would be a second source
+# of truth for the same version.
+
+# Language runtimes. `node` backs the textlint pre-commit hook.
+node = "lts"
+
+# Aqua tools
+"aqua:j178/prek" = "0.4.11"

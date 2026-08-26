@@ -4,9 +4,7 @@ Shuhari separates the Agent Skills evaluation mechanism from repository-specific
 
 The intended readers are maintainers and gate operators. The outcome is a fresh,
 auditable with/without evaluation: each side is graded in a blinded workspace,
-the comparator remains blind, and security, timing, grading, and benchmark
-receipts explain the certification result. The detailed grading rules live in
-[`docs/grading-contract.md`](grading-contract.md).
+the comparator remains blind, and security, timing, grading, and benchmark receipts explain the certification result. The detailed grading rules live in [`docs/grading-contract.md`](grading-contract.md).
 
 ## Responsibility boundaries
 
@@ -106,15 +104,7 @@ All modes strip known GitHub credential variables from child commands. This is o
 
 An explicit `--sandbox` wins over `SHUHARI_SANDBOX`. `ResolveSecurity` returns one digest-bearing adapter mapping; the engine validates and reuses it for runs and judge workspaces. `Probe` checks the native sandbox before workspace creation. Unsupported mappings or hosts return `ErrUnsupportedSecurityPolicy`; Shuhari never degrades.
 
-Judges use resolved `read-only` without network for protected execution. When
-the evaluated execution is explicitly acknowledged `unsandboxed`, the judge
-reuses that unsandboxed resolution as well; its per-side copied artifact tree
-still gives each judge only the files for its blinded side. An unsandboxed
-judge may nevertheless access paths outside that copied tree, so no kernel
-filesystem guarantee is claimed; evaluators must record and review that weaker
-boundary. Artifacts are not rendered into the judge prompt. The comparator
-remains prompt-rendered because it compares two outputs rather than grounding
-a positive claim.
+Judges use resolved `read-only` without network for protected execution. When the evaluated execution is explicitly acknowledged `unsandboxed`, the judge reuses that unsandboxed resolution as well; its per-side copied artifact tree still gives each judge only the files for its blinded side. An unsandboxed judge may nevertheless access paths outside that copied tree, so no kernel filesystem guarantee is claimed; evaluators must record and review that weaker boundary. Artifacts are not rendered into the judge prompt. The comparator remains prompt-rendered because it compares two outputs rather than grounding a positive claim.
 
 ### Security provenance
 
@@ -154,12 +144,7 @@ CI runs these probes against the real Codex child sandbox for both protected lev
 
 ## Trigger evidence
 
-Trigger checks retain ordered transcript evidence for `target_read` and record
-the separate judge decision as `target_applied`. A positive application case
-passes only when both the read and application policies are satisfied; a
-negative control must not apply the skill. The trigger subsystem keeps its
-mechanical read coverage and blind application verdict independently of
-evaluation grading.
+Trigger checks retain ordered transcript evidence for `target_read` and record the separate judge decision as `target_applied`. A positive application case passes only when both the read and application policies are satisfied; a negative control must not apply the skill. The trigger subsystem keeps its mechanical read coverage and blind application verdict independently of evaluation grading.
 
 ## Documentation growth
 
