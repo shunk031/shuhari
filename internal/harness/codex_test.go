@@ -284,9 +284,12 @@ fi
 if test -f "$CODEX_HOME/auth.json"; then
   stat -c '%%a' "$CODEX_HOME/auth.json" > %q/auth-mode
 fi
+if test -f "$CODEX_HOME/runtime.config.toml"; then
+  cp "$CODEX_HOME/runtime.config.toml" %q/runtime-config
+fi
 printf '%%s\n' '{"type":"item.completed","item":{"id":"1","type":"agent_message","text":"done"}}'
 printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}'
-`, capture, capture, capture, capture)
+`, capture, capture, capture, capture, capture)
 	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -295,6 +298,9 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(sourceHome, "auth.json"), []byte(`{"token":"secret"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceHome, "runtime.config.toml"), []byte("profile = \"test\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("CODEX_HOME", sourceHome)
@@ -350,6 +356,13 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input
 	if strings.TrimSpace(string(authMode)) != "600" {
 		t.Fatalf("copied auth mode = %q, want 600", strings.TrimSpace(string(authMode)))
 	}
+	runtimeConfig, err := os.ReadFile(filepath.Join(capture, "runtime-config"))
+	if err != nil {
+		t.Fatalf("read copied runtime config: %v", err)
+	}
+	if string(runtimeConfig) != "profile = \"test\"\n" {
+		t.Fatalf("copied runtime config = %q", runtimeConfig)
+	}
 	environment, err := os.ReadFile(filepath.Join(capture, "env"))
 	if err != nil {
 		t.Fatal(err)
@@ -365,6 +378,136 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input
 	}
 	if strings.Contains(envText, "CODEX_HOME="+sourceHome) || !strings.Contains(envText, "CODEX_HOME=") {
 		t.Fatalf("CODEX_HOME was not isolated:\n%s", envText)
+	}
+}
+
+func TestInitializeCodexHomeCopiesRegularAdditionalConfigSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink requires elevated privileges on Windows")
+	}
+
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "runtime.config.toml"), []byte("profile = \"test\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.config.toml")
+	if err := os.WriteFile(outside, []byte("profile = \"outside\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(source, "linked.config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", source)
+
+	destination := filepath.Join(t.TempDir(), "codex-home")
+	if err := initializeCodexHome(destination); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(destination, "runtime.config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "profile = \"test\"\n" {
+		t.Fatalf("runtime config = %q", contents)
+	}
+	linked := filepath.Join(destination, "linked.config.toml")
+	info, err := os.Lstat(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		t.Fatalf("copied symlink mode = %v, want regular 0600", info.Mode())
+	}
+	contents, err = os.ReadFile(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "profile = \"outside\"\n" {
+		t.Fatalf("linked runtime config = %q", contents)
+	}
+}
+
+func TestInitializeCodexHomeRejectsInvalidAdditionalConfigs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink requires elevated privileges on Windows")
+	}
+
+	for _, test := range []struct {
+		name  string
+		setup func(t *testing.T, source string)
+	}{
+		{
+			name: "dangling symlink",
+			setup: func(t *testing.T, source string) {
+				t.Helper()
+				if err := os.Symlink(filepath.Join(source, "missing.config.toml"), filepath.Join(source, "linked.config.toml")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "directory",
+			setup: func(t *testing.T, source string) {
+				t.Helper()
+				if err := os.Mkdir(filepath.Join(source, "directory.config.toml"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := t.TempDir()
+			test.setup(t, source)
+			t.Setenv("CODEX_HOME", source)
+			if err := initializeCodexHome(filepath.Join(t.TempDir(), "codex-home")); err == nil {
+				t.Fatal("initializeCodexHome() succeeded for an invalid additional config")
+			}
+		})
+	}
+}
+
+func TestCopyCodexHomeFileHandlesAbsentUnreadableAndUnwritableFiles(t *testing.T) {
+	source := t.TempDir()
+	destination := t.TempDir()
+	if err := copyCodexHomeFile(source, destination, "missing.config.toml"); err != nil {
+		t.Fatalf("copyCodexHomeFile() error = %v for an absent file", err)
+	}
+	if err := os.Mkdir(filepath.Join(source, "directory.config.toml"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyCodexHomeFile(source, destination, "directory.config.toml"); err == nil {
+		t.Fatal("copyCodexHomeFile() accepted a directory")
+	}
+	if err := os.WriteFile(filepath.Join(source, "blocked.config.toml"), []byte("profile = \"test\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(destination, "blocked.config.toml"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyCodexHomeFile(source, destination, "blocked.config.toml"); err == nil {
+		t.Fatal("copyCodexHomeFile() wrote through a directory")
+	}
+}
+
+func TestRunCodexCombinedOutputBoundsWaitForInheritedPipes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the mock CLI uses a POSIX background process")
+	}
+
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n(sleep 5) &\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	output, err := runCodexCombinedOutput(newCodexCommand(context.Background(), script))
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("runCodexCombinedOutput() waited %s for inherited pipes", elapsed)
+	}
+	if err == nil || !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("runCodexCombinedOutput() error = %v, want WaitDelay expiration", err)
+	}
+	if len(output) != 0 {
+		t.Fatalf("runCodexCombinedOutput() output = %q, want empty", output)
 	}
 }
 
@@ -1225,6 +1368,69 @@ printf '%%s\n' "$count" > "$count_file"
 				t.Fatalf("Codex invocations = %q, want %q", got, test.wantInvocations)
 			}
 		})
+	}
+}
+
+func TestCodexRunOnceBoundsWaitForInheritedPipes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the mock CLI uses a POSIX background process")
+	}
+
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := `#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
+(sleep 5) &
+exit 0
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	agent := newCodex(Config{Executable: script})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+	started := time.Now()
+	_, observation, err := agent.runOnce(context.Background(), Request{
+		WorkDir:  t.TempDir(),
+		Prompt:   "test",
+		Security: security,
+		Timeout:  100 * time.Millisecond,
+	}, defaultFirstTokenTimeout)
+	elapsed := time.Since(started)
+	if err == nil || !errors.Is(err, ErrTransient) {
+		t.Fatalf("runOnce() error = %v, want transient timeout", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("runOnce() waited %s for inherited pipes after cancellation", elapsed)
+	}
+	if observation.Duration > time.Second {
+		t.Fatalf("attempt observation duration = %s, want bounded wait", observation.Duration)
+	}
+}
+
+func TestWriteBundledModelCatalogBoundsWaitForInheritedPipes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the mock CLI uses a POSIX background process")
+	}
+
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := `#!/bin/sh
+(sleep 5) &
+exit 0
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	err := writeBundledModelCatalog(context.Background(), script, t.TempDir(), filepath.Join(t.TempDir(), "models.json"))
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("writeBundledModelCatalog() waited %s for inherited pipes", elapsed)
+	}
+	if err == nil || !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("writeBundledModelCatalog() error = %v, want WaitDelay expiration", err)
 	}
 }
 
