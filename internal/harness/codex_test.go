@@ -466,6 +466,51 @@ func TestInitializeCodexHomeRejectsInvalidAdditionalConfigs(t *testing.T) {
 	}
 }
 
+func TestCopyCodexHomeFileHandlesAbsentUnreadableAndUnwritableFiles(t *testing.T) {
+	source := t.TempDir()
+	destination := t.TempDir()
+	if err := copyCodexHomeFile(source, destination, "missing.config.toml"); err != nil {
+		t.Fatalf("copyCodexHomeFile() error = %v for an absent file", err)
+	}
+	if err := os.Mkdir(filepath.Join(source, "directory.config.toml"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyCodexHomeFile(source, destination, "directory.config.toml"); err == nil {
+		t.Fatal("copyCodexHomeFile() accepted a directory")
+	}
+	if err := os.WriteFile(filepath.Join(source, "blocked.config.toml"), []byte("profile = \"test\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(destination, "blocked.config.toml"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyCodexHomeFile(source, destination, "blocked.config.toml"); err == nil {
+		t.Fatal("copyCodexHomeFile() wrote through a directory")
+	}
+}
+
+func TestRunCodexCombinedOutputBoundsWaitForInheritedPipes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the mock CLI uses a POSIX background process")
+	}
+
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n(sleep 5) &\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	output, err := runCodexCombinedOutput(newCodexCommand(context.Background(), script))
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("runCodexCombinedOutput() waited %s for inherited pipes", elapsed)
+	}
+	if err == nil || !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("runCodexCombinedOutput() error = %v, want WaitDelay expiration", err)
+	}
+	if len(output) != 0 {
+		t.Fatalf("runCodexCombinedOutput() output = %q, want empty", output)
+	}
+}
+
 func TestCodexRunUsesBundledModelCatalogForExplicitModel(t *testing.T) {
 	capture := t.TempDir()
 	script := filepath.Join(t.TempDir(), "fake-codex")
