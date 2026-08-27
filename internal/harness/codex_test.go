@@ -1228,6 +1228,69 @@ printf '%%s\n' "$count" > "$count_file"
 	}
 }
 
+func TestCodexRunOnceBoundsWaitForInheritedPipes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the mock CLI uses a POSIX background process")
+	}
+
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := `#!/bin/sh
+if test "$3" = debug && test "$4" = models; then
+  printf '%s\n' '{"models":[{"slug":"bundled-model","base_instructions":"bundled"}]}'
+  exit 0
+fi
+(sleep 5) &
+exit 0
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	agent := newCodex(Config{Executable: script})
+	security := mustResolveCodexSecurity(t, agent, SecurityPolicy{Level: SandboxIsolated})
+	started := time.Now()
+	_, observation, err := agent.runOnce(context.Background(), Request{
+		WorkDir:  t.TempDir(),
+		Prompt:   "test",
+		Security: security,
+		Timeout:  100 * time.Millisecond,
+	}, defaultFirstTokenTimeout)
+	elapsed := time.Since(started)
+	if err == nil || !errors.Is(err, ErrTransient) {
+		t.Fatalf("runOnce() error = %v, want transient timeout", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("runOnce() waited %s for inherited pipes after cancellation", elapsed)
+	}
+	if observation.Duration > time.Second {
+		t.Fatalf("attempt observation duration = %s, want bounded wait", observation.Duration)
+	}
+}
+
+func TestWriteBundledModelCatalogBoundsWaitForInheritedPipes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the mock CLI uses a POSIX background process")
+	}
+
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	contents := `#!/bin/sh
+(sleep 5) &
+exit 0
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	err := writeBundledModelCatalog(context.Background(), script, t.TempDir(), filepath.Join(t.TempDir(), "models.json"))
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("writeBundledModelCatalog() waited %s for inherited pipes", elapsed)
+	}
+	if err == nil || !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("writeBundledModelCatalog() error = %v, want WaitDelay expiration", err)
+	}
+}
+
 func TestCodexFirstTokenTimeoutConfiguration(t *testing.T) {
 	t.Setenv("SHUHARI_FIRST_TOKEN_TIMEOUT", "")
 	if timeout, err := configuredFirstTokenTimeout(); err != nil || timeout != 90*time.Second {

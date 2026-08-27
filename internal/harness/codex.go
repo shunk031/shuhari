@@ -56,7 +56,8 @@ func waitForCodexRetry(ctx context.Context, retry int) error {
 }
 
 func (h *codexHarness) Probe(ctx context.Context, securities ...SecurityResolution) (Identity, error) {
-	output, err := exec.CommandContext(ctx, h.executable, "--version").CombinedOutput()
+	command := newCodexCommand(ctx, h.executable, "--version")
+	output, err := runCodexCombinedOutput(command)
 	if err != nil {
 		return Identity{}, fmt.Errorf("probe codex: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -134,9 +135,9 @@ func (h *codexHarness) probeSandbox(ctx context.Context, security SecurityResolu
 	}
 	args := []string{"sandbox", "--profile", "shuhari", "--permission-profile", "shuhari-eval", "--cd", workDir}
 	args = append(args, sandboxProbeCommand()...)
-	command := exec.CommandContext(ctx, h.executable, args...)
+	command := newCodexCommand(ctx, h.executable, args...)
 	command.Env = cleanEnvironment(codexHome)
-	output, err := command.CombinedOutput()
+	output, err := runCodexCombinedOutput(command)
 	if err == nil {
 		return nil
 	}
@@ -441,7 +442,7 @@ func (h *codexHarness) runCompletionOnce(parent context.Context, request Request
 	}
 	args = append(args, "-")
 
-	command := exec.CommandContext(ctx, h.executable, args...)
+	command := newCodexCommand(ctx, h.executable, args...)
 	command.Dir = temporary
 	command.Stdin = strings.NewReader(request.Prompt)
 	command.Env = codexEnvironment(codexHome)
@@ -470,7 +471,7 @@ func (h *codexHarness) runCompletionOnce(parent context.Context, request Request
 			cancel()
 		}
 	}()
-	err = command.Run()
+	err = runCodexCommand(command)
 	close(commandDone)
 	<-watchdogFinished
 	duration := time.Since(started)
@@ -638,7 +639,7 @@ func (h *codexHarness) runOnce(parent context.Context, request Request, firstTok
 	}
 	args = append(args, "-")
 
-	command := exec.CommandContext(ctx, h.executable, args...)
+	command := newCodexCommand(ctx, h.executable, args...)
 	command.Stdin = strings.NewReader(request.Prompt)
 	command.Env = codexEnvironment(codexHome)
 	started := time.Now()
@@ -666,7 +667,7 @@ func (h *codexHarness) runOnce(parent context.Context, request Request, firstTok
 			cancel()
 		}
 	}()
-	err = command.Run()
+	err = runCodexCommand(command)
 	close(commandDone)
 	<-watchdogFinished
 	duration := time.Since(started)
@@ -1125,12 +1126,12 @@ func initializeCodexHome(destination string) error {
 }
 
 func writeBundledModelCatalog(ctx context.Context, executable, codexHome, destination string) error {
-	command := exec.CommandContext(ctx, executable, "--disable", "plugins", "debug", "models", "--bundled")
+	command := newCodexCommand(ctx, executable, "--disable", "plugins", "debug", "models", "--bundled")
 	command.Env = codexEnvironment(codexHome)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	if err := command.Run(); err != nil {
+	if err := runCodexCommand(command); err != nil {
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = strings.TrimSpace(stdout.String())
