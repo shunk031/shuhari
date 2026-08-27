@@ -284,9 +284,12 @@ fi
 if test -f "$CODEX_HOME/auth.json"; then
   stat -c '%%a' "$CODEX_HOME/auth.json" > %q/auth-mode
 fi
+if test -f "$CODEX_HOME/runtime.config.toml"; then
+  cp "$CODEX_HOME/runtime.config.toml" %q/runtime-config
+fi
 printf '%%s\n' '{"type":"item.completed","item":{"id":"1","type":"agent_message","text":"done"}}'
 printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}'
-`, capture, capture, capture, capture)
+`, capture, capture, capture, capture, capture)
 	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -295,6 +298,9 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(sourceHome, "auth.json"), []byte(`{"token":"secret"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceHome, "runtime.config.toml"), []byte("profile = \"test\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("CODEX_HOME", sourceHome)
@@ -350,6 +356,13 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input
 	if strings.TrimSpace(string(authMode)) != "600" {
 		t.Fatalf("copied auth mode = %q, want 600", strings.TrimSpace(string(authMode)))
 	}
+	runtimeConfig, err := os.ReadFile(filepath.Join(capture, "runtime-config"))
+	if err != nil {
+		t.Fatalf("read copied runtime config: %v", err)
+	}
+	if string(runtimeConfig) != "profile = \"test\"\n" {
+		t.Fatalf("copied runtime config = %q", runtimeConfig)
+	}
 	environment, err := os.ReadFile(filepath.Join(capture, "env"))
 	if err != nil {
 		t.Fatal(err)
@@ -365,6 +378,91 @@ printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input
 	}
 	if strings.Contains(envText, "CODEX_HOME="+sourceHome) || !strings.Contains(envText, "CODEX_HOME=") {
 		t.Fatalf("CODEX_HOME was not isolated:\n%s", envText)
+	}
+}
+
+func TestInitializeCodexHomeCopiesRegularAdditionalConfigSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink requires elevated privileges on Windows")
+	}
+
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "runtime.config.toml"), []byte("profile = \"test\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.config.toml")
+	if err := os.WriteFile(outside, []byte("profile = \"outside\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(source, "linked.config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", source)
+
+	destination := filepath.Join(t.TempDir(), "codex-home")
+	if err := initializeCodexHome(destination); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(destination, "runtime.config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "profile = \"test\"\n" {
+		t.Fatalf("runtime config = %q", contents)
+	}
+	linked := filepath.Join(destination, "linked.config.toml")
+	info, err := os.Lstat(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		t.Fatalf("copied symlink mode = %v, want regular 0600", info.Mode())
+	}
+	contents, err = os.ReadFile(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "profile = \"outside\"\n" {
+		t.Fatalf("linked runtime config = %q", contents)
+	}
+}
+
+func TestInitializeCodexHomeRejectsInvalidAdditionalConfigs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink requires elevated privileges on Windows")
+	}
+
+	for _, test := range []struct {
+		name  string
+		setup func(t *testing.T, source string)
+	}{
+		{
+			name: "dangling symlink",
+			setup: func(t *testing.T, source string) {
+				t.Helper()
+				if err := os.Symlink(filepath.Join(source, "missing.config.toml"), filepath.Join(source, "linked.config.toml")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "directory",
+			setup: func(t *testing.T, source string) {
+				t.Helper()
+				if err := os.Mkdir(filepath.Join(source, "directory.config.toml"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := t.TempDir()
+			test.setup(t, source)
+			t.Setenv("CODEX_HOME", source)
+			if err := initializeCodexHome(filepath.Join(t.TempDir(), "codex-home")); err == nil {
+				t.Fatal("initializeCodexHome() succeeded for an invalid additional config")
+			}
+		})
 	}
 }
 

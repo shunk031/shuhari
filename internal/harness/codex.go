@@ -1106,21 +1106,47 @@ func initializeCodexHome(destination string) error {
 		return err
 	}
 	for _, name := range []string{"config.toml", "auth.json"} {
-		from := filepath.Join(source, name)
-		_, err := os.Stat(from)
-		if errors.Is(err, os.ErrNotExist) {
+		if err := copyCodexHomeFile(source, destination, name); err != nil {
+			return err
+		}
+	}
+	entries, err := os.ReadDir(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read codex home: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".config.toml") {
 			continue
 		}
+		info, err := os.Stat(filepath.Join(source, name))
 		if err != nil {
 			return fmt.Errorf("inspect codex %s: %w", name, err)
 		}
-		contents, err := os.ReadFile(from)
-		if err != nil {
-			return fmt.Errorf("read codex %s: %w", name, err)
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("inspect codex %s: must resolve to a regular file", name)
 		}
-		if err := os.WriteFile(filepath.Join(destination, name), contents, 0o600); err != nil {
-			return fmt.Errorf("copy codex %s: %w", name, err)
+		if err := copyCodexHomeFile(source, destination, name); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func copyCodexHomeFile(source, destination, name string) error {
+	from := filepath.Join(source, name)
+	contents, err := os.ReadFile(from)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read codex %s: %w", name, err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, name), contents, 0o600); err != nil {
+		return fmt.Errorf("copy codex %s: %w", name, err)
 	}
 	return nil
 }
