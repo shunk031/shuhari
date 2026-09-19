@@ -130,6 +130,27 @@ func TestAgenticRunResolvesSecurityBeforeCapabilityGate(t *testing.T) {
 	}
 }
 
+func TestBuildRunPromptUsesInstalledInstructionsPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   *harness.Target
+		guidance string
+	}{
+		{name: "instructions", target: &harness.Target{Kind: harness.TargetInstructions, Name: "user-guidance"}, guidance: "- Use the available instructions in AGENTS.md.\n"},
+		{name: "skill", target: &harness.Target{Kind: harness.TargetSkill, Name: "demo"}, guidance: "- Use the available skill named \"demo\".\n"},
+		{name: "without target"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := buildRunPrompt(Case{Prompt: "task"}, nil, "outputs", test.target)
+			want := "Execute this task in the current workspace.\n" + test.guidance + "- Task: task\n- Save all produced files under: outputs\n"
+			if got != want {
+				t.Fatalf("buildRunPrompt() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func formatInt(value int) string {
 	if value == 1 {
 		return "1"

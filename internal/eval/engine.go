@@ -383,7 +383,11 @@ func buildRunPrompt(item Case, files []string, outputDir string, target *harness
 	var builder strings.Builder
 	builder.WriteString("Execute this task in the current workspace.\n")
 	if target != nil {
-		fmt.Fprintf(&builder, "- Use the available %s named %q.\n", target.Kind, target.Name)
+		if target.Kind == harness.TargetInstructions {
+			builder.WriteString("- Use the available instructions in AGENTS.md.\n")
+		} else {
+			fmt.Fprintf(&builder, "- Use the available %s named %q.\n", target.Kind, target.Name)
+		}
 	}
 	fmt.Fprintf(&builder, "- Task: %s\n", item.Prompt)
 	if len(files) > 0 {
